@@ -58,6 +58,9 @@ static class SelfTest
         drill.Note("x", "s1-parent", "a b", "2026-01-01T00:00:00", () => new Finder.Snippet("", "w", "first", 2));
         drill.Note("x", "s2-other", "a b", "2026-01-03T00:00:00", () => new Finder.Snippet("", "w", "other", 2));
         Check(drill.Sessions.Keys.Single().SessionId == "s1-parent" && drill.Sessions.Values.Single().All.Count == 2, "drills into one session's excerpts");
+        var escaped = new Finder.Scan(["C:\\hcw", "say \"hi\""]);
+        escaped.Note("x", "s", """{"cwd":"C:\\hcw","text":"say \"hi\""}""", "2026-01-01T00:00:00", () => null);
+        Check(escaped.Sessions.Values.SingleOrDefault()?.Mentions.All(count => count == 1) == true, "finds terms that JSON escapes");
         using (var toolUse = JsonDocument.Parse("{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file_path\":\"C:\\\\x.md\",\"content\":\"threat model " +
             new string('a', 400) + " T05 RabbitMQ threat merged " + new string('b', 400) + "\"}}"))
         {
@@ -121,17 +124,21 @@ static class SelfTest
         var excluded = Corpus.Capture(root, families);
         Check(excluded.Manifest.DocumentCount == 0 && !Directory.EnumerateFiles(Path.Combine(root, "corpus"), "*.md").Any(), "removes excluded sessions from the corpus");
         File.Delete(Corpus.ExclusionsPath(root));
+        Check(Corpus.Capture(root, families).Manifest.DocumentCount == 1, "brings an included session back");
 
         var chat = Path.Combine(root, "chat.jsonl");
         File.WriteAllLines(chat,
         [
-            """{"kind":0,"v":{"requests":[],"pendingRequests":[1]}}""",
+            """{"kind":0,"v":{"requests":[],"pendingRequests":[1,2],"parts":["a","partial","stale"],"title":"t"}}""",
             """{"kind":2,"k":["requests"],"v":[{"message":{"text":"x"}}]}""",
             """{"kind":1,"k":["requests",0,"result"],"v":{"ok":true}}""",
             """{"kind":2,"k":["pendingRequests"],"i":0}""",
+            """{"kind":2,"k":["parts"],"i":1,"v":["final"]}""",
+            """{"kind":3,"k":["title"]}""",
         ]);
         var (state, errors) = Parsers.Replay(chat, new JsonlStats());
-        Check(errors == 0 && state["requests"]![0]!["result"]!["ok"]!.GetValue<bool>() && state["pendingRequests"]!.AsArray().Count == 0,
+        Check(errors == 0 && state["requests"]![0]!["result"]!["ok"]!.GetValue<bool>() && state["pendingRequests"]!.AsArray().Count == 0
+            && state["parts"]!.AsArray().Select(part => part!.GetValue<string>()).SequenceEqual(["a", "final"]) && state["title"] is null,
             "replays VS Code edit logs");
 
         var compressed = Path.Combine(root, "rollout.jsonl.zst");

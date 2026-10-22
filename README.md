@@ -31,8 +31,8 @@ The installer:
 - adds a short "Local LEANN session memory" section to `~\.codex\AGENTS.md`, `~\.claude\CLAUDE.md` and
   `~\.copilot\copilot-instructions.md`, keeping backups of the originals.
 
-The first index builds in the background. `.\Install-SessionMemory.ps1 -Rollback` removes the task and restores the
-instruction files; the index is kept.
+The first index builds in the background. `.\Install-SessionMemory.ps1 -Rollback` removes the task and the memory
+section from the instruction files, keeping any other edits; the index is kept.
 
 ## Use
 

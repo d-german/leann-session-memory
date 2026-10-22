@@ -17,19 +17,27 @@ static class Program
         var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LeannSessionMemory");
         if (Option(arguments, "--root") is { } custom) root = Path.GetFullPath(custom);
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return arguments.FirstOrDefault() switch
+        try
         {
-            "run" => Run(root, home, arguments.Contains("--once"), arguments.Contains("--force")),
-            "search" when arguments.Count > 1 => Search(root, arguments),
-            "find" when arguments.Count > 1 => Find(root, home, arguments),
-            "show" when arguments.Count > 1 => Show(root, arguments),
-            "exclude" when arguments.Count > 1 => Exclude(root, arguments[1], true),
-            "include" when arguments.Count > 1 => Exclude(root, arguments[1], false),
-            "capture" => Capture(root, home),
-            "status" => Status(root),
-            "self-test" => SelfTest.Run(),
-            _ => Fail(Usage, 2),
-        };
+            return arguments.FirstOrDefault() switch
+            {
+                "run" => Run(root, home, arguments.Contains("--once"), arguments.Contains("--force")),
+                "search" when arguments.Count > 1 => Search(root, arguments),
+                "find" when arguments.Count > 1 => Find(root, home, arguments),
+                "show" when arguments.Count > 1 => Show(root, arguments),
+                "exclude" when arguments.Count > 1 => Exclude(root, arguments[1], true),
+                "include" when arguments.Count > 1 => Exclude(root, arguments[1], false),
+                "capture" => Capture(root, home),
+                "status" => Status(root),
+                "self-test" => SelfTest.Run(),
+                _ => Fail(Usage, 2),
+            };
+        }
+        catch (Exception error) when (error is FormatException or OverflowException)
+        {
+            // A numeric option such as --top-k was given something other than a whole number.
+            return Fail($"{error.Message}\n{Usage}", 2);
+        }
     }
 
     static string? Option(List<string> arguments, string name)
@@ -121,7 +129,9 @@ static class Program
             Console.WriteLine($"Included {id} again.");
         }
         Store.Save(Corpus.ExclusionsPath(root), exclusions);
-        Console.WriteLine("Search hides it now; the watcher removes it from both indexes within about 20 minutes.");
+        Console.WriteLine(exclude
+            ? "Search hides it now; the watcher removes it from both indexes within about 20 minutes."
+            : "The watcher indexes it again within a few minutes.");
         return 0;
     }
 

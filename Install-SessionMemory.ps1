@@ -14,47 +14,70 @@ $TaskName = 'LeannSessionMemoryRefresh'
 $LeannVersion = '2.10.1'
 $LeannDir = Join-Path $Root 'leann'
 $ExistingInstall = if (Test-Path $InstallState) { Get-Content $InstallState -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+$Section = '<!-- leann-session-memory:start -->.*?<!-- leann-session-memory:end -->'
+
+# Processes started from this install: the watcher, or a search server or index build it launched.
+function Stop-Owned([string]$Name) {
+    Get-CimInstance Win32_Process -Filter "Name = '$Name'" |
+        Where-Object { $_.ExecutablePath -eq $Exe -or "$($_.ExecutablePath)".StartsWith("$LeannDir\", 'OrdinalIgnoreCase') } |
+        ForEach-Object {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            Wait-Process -Id $_.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+        }
+}
 
 function Stop-Watcher {
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+        # Disabled first, so the one-minute trigger can't restart the watcher while its files are replaced.
+        Disable-ScheduledTask -TaskName $TaskName | Out-Null
         Stop-ScheduledTask -TaskName $TaskName
     }
-    Get-CimInstance Win32_Process -Filter "Name = 'SessionMemory.exe'" |
-        Where-Object ExecutablePath -eq $Exe |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+    Stop-Owned 'SessionMemory.exe'
     # The watcher's resident LEANN search server.
     try { Invoke-RestMethod 'http://localhost:57392/shutdown' -TimeoutSec 3 | Out-Null } catch { }
+    Stop-Owned 'leann-dotnet.exe'
 }
 
 if ($Rollback) {
     Stop-Watcher
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    # Only the memory section is removed, so edits made since the install are kept.
     foreach ($Entry in $ExistingInstall.instructionFiles) {
-        if ($Entry.existed) {
-            New-Item -ItemType Directory -Force -Path (Split-Path $Entry.path) | Out-Null
-            Copy-Item $Entry.backup $Entry.path -Force
+        if (-not (Test-Path $Entry.path)) { continue }
+        $Remaining = [regex]::Replace([string](Get-Content $Entry.path -Raw -Encoding UTF8), "(?s)\s*$Section", '').TrimEnd()
+        if ($Remaining -or $Entry.existed) {
+            Set-Content -Path $Entry.path -Value $(if ($Remaining) { $Remaining + [Environment]::NewLine } else { '' }) -Encoding utf8 -NoNewline
         }
-        elseif (Test-Path $Entry.path) {
+        else {
             Remove-Item $Entry.path -Force
         }
     }
+    # A later install then backs up the files as they are at that point.
+    Remove-Item $InstallState -Force -ErrorAction SilentlyContinue
     Write-Output 'Session-memory instructions and scheduled task removed. Corpus and indexes were preserved.'
     exit 0
 }
 
-Stop-Watcher
 if (-not (& dotnet --list-sdks 2>$null | Select-String '^10\.')) {
     throw 'The .NET 10 SDK is required: https://dotnet.microsoft.com/download/dotnet/10.0'
 }
+Stop-Watcher
 New-Item -ItemType Directory -Force -Path $Bin, $State | Out-Null
-& dotnet publish (Join-Path $PSScriptRoot 'SessionMemory.csproj') --configuration Release --output $Bin --nologo --verbosity quiet
-if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed' }
-$LeannVerb = if (Test-Path (Join-Path $LeannDir 'leann-dotnet.exe')) { 'update' } else { 'install' }
-& dotnet tool $LeannVerb leann-dotnet --version $LeannVersion --tool-path $LeannDir | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Installing LEANN .NET $LeannVersion failed" }
-if (-not (Test-Path (Join-Path $HOME '.leann\models\facebook-contriever\model.onnx'))) {
-    & (Join-Path $LeannDir 'leann-dotnet.exe') --setup --model facebook/contriever
-    if ($LASTEXITCODE -ne 0) { throw 'Downloading the facebook/contriever model failed' }
+try {
+    & dotnet publish (Join-Path $PSScriptRoot 'SessionMemory.csproj') --configuration Release --output $Bin --nologo --verbosity quiet
+    if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed' }
+    $LeannVerb = if (Test-Path (Join-Path $LeannDir 'leann-dotnet.exe')) { 'update' } else { 'install' }
+    & dotnet tool $LeannVerb leann-dotnet --version $LeannVersion --tool-path $LeannDir | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Installing LEANN .NET $LeannVersion failed" }
+    if (-not (Test-Path (Join-Path $HOME '.leann\models\facebook-contriever\model.onnx'))) {
+        & (Join-Path $LeannDir 'leann-dotnet.exe') --setup --model facebook/contriever
+        if ($LASTEXITCODE -ne 0) { throw 'Downloading the facebook/contriever model failed' }
+    }
+}
+catch {
+    # A failed upgrade turns the previous watcher back on instead of leaving it disabled.
+    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) { Enable-ScheduledTask -TaskName $TaskName | Out-Null }
+    throw
 }
 Copy-Item (Join-Path $PSScriptRoot 'Search-SessionMemory.ps1'), $PSCommandPath -Destination $Bin -Force
 
@@ -93,7 +116,7 @@ foreach ($Target in $Targets) {
     }
     # Windows PowerShell reads BOM-less files as ANSI unless told otherwise, which would double-encode them.
     $Current = if (Test-Path $Target) { Get-Content $Target -Raw -Encoding UTF8 } else { '' }
-    $Pattern = '(?s)<!-- leann-session-memory:start -->.*?<!-- leann-session-memory:end -->'
+    $Pattern = "(?s)$Section"
     $Updated = if ($Current -match $Pattern) {
         [regex]::Replace($Current, $Pattern, $Block.Trim())
     }

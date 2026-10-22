@@ -234,7 +234,8 @@ static partial class Parsers
             .OfType<string>());
     }
 
-    // VS Code chat files are edit logs: kind 0 sets the state, 1 sets a path, 2 splices an array.
+    // VS Code chat files are edit logs (ObjectMutationLog): kind 0 sets the state, 1 sets a path, 2 cuts an array
+    // at "i" and appends "v", 3 deletes a property.
     public static (JsonObject State, long Errors) Replay(string path, JsonlStats stats)
     {
         var state = new JsonObject();
@@ -255,8 +256,11 @@ static partial class Parsers
                 }
                 else if (kind == 2 && state.Count > 0)
                 {
-                    var hasValue = operation.ContainsKey("v");
-                    Splice(state, Keys(operation), operation["i"], Take(operation), hasValue);
+                    Push(state, Keys(operation), operation["i"], Take(operation));
+                }
+                else if (kind == 3 && state.Count > 0)
+                {
+                    SetPath(state, Keys(operation), null);
                 }
             }
             catch (ReplayException)
@@ -269,7 +273,7 @@ static partial class Parsers
 
     static int OperationKind(JsonNode? kind) => kind.Kind() switch
     {
-        JsonValueKind.Number => kind!.AsValue().TryGetValue<double>(out var number) && number is 0 or 1 or 2 ? (int)number : -1,
+        JsonValueKind.Number => kind!.AsValue().TryGetValue<double>(out var number) && number is 0 or 1 or 2 or 3 ? (int)number : -1,
         JsonValueKind.True => 1,
         JsonValueKind.False => 0,
         _ => -1,
@@ -308,23 +312,21 @@ static partial class Parsers
         }
     }
 
-    static void Splice(JsonObject root, List<JsonNode?> keys, JsonNode? index, JsonNode? value, bool hasValue)
+    // "i" rewrites the array from that index: a streamed or edited item replaces the rest, and "i" alone removes them.
+    static void Push(JsonObject root, List<JsonNode?> keys, JsonNode? index, JsonNode? value)
     {
         JsonNode? target = root;
         foreach (var key in keys) target = Child(target, key);
         if (target is not JsonArray items) throw new ReplayException();
-        var position = index is null ? items.Count : Index(index) ?? throw new ReplayException();
-        if (hasValue)
+        if (index is not null)
         {
-            position = position < 0 ? Math.Max(0, position + items.Count) : Math.Min(position, items.Count);
-            List<JsonNode?> additions = value is JsonArray array ? [.. array] : [value];
-            if (value is JsonArray source) source.Clear();
-            foreach (var addition in additions) items.Insert((int)position++, addition);
+            var cut = Index(index) is { } at and >= 0 ? at : throw new ReplayException();
+            while (items.Count > cut) items.RemoveAt(items.Count - 1);
         }
-        else if (position >= 0 && position < items.Count)
-        {
-            items.RemoveAt((int)position);
-        }
+        if (value is not JsonArray additions) return;
+        List<JsonNode?> moved = [.. additions];
+        additions.Clear();
+        foreach (var addition in moved) items.Add(addition);
     }
 
     static JsonNode? Child(JsonNode? node, JsonNode? key)

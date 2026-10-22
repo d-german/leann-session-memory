@@ -94,9 +94,10 @@ static class Corpus
         var contents = new Dictionary<string, string>();
         var reports = new Dictionary<string, FamilyReport>();
         var reparsed = new List<string>();
+        var exclusions = LoadExclusions(root);
         foreach (var family in families)
         {
-            var fingerprint = Fingerprint(family.Sources());
+            var fingerprint = Fingerprint(family.Sources(), exclusions);
             if (previous.Version == ManifestVersion && previous.Families.TryGetValue(family.Name, out var known) && known.Ok && known.Fingerprint == fingerprint)
             {
                 reports[family.Name] = known;
@@ -136,7 +137,6 @@ static class Corpus
             if (!parsed.Contains(meta.Family) && !documents.ContainsKey(name) && File.Exists(Path.Combine(corpus, name)))
                 documents[name] = meta;
         }
-        var exclusions = LoadExclusions(root);
         foreach (var name in documents.Where(pair => IsExcluded(pair.Value.SessionId, exclusions)).Select(pair => pair.Key).ToList())
         {
             documents.Remove(name);
@@ -178,10 +178,11 @@ static class Corpus
     public static bool IsExcluded(string sessionId, IReadOnlyCollection<string> exclusions) =>
         exclusions.Any(prefix => sessionId.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
 
-    static string Fingerprint(IEnumerable<string> files)
+    static string Fingerprint(IEnumerable<string> files, IEnumerable<string> exclusions)
     {
-        // The build id makes a new parser re-read every family once.
+        // The build id makes a new parser re-read every family once; the exclusions make an included session come back.
         var builder = new StringBuilder().Append(typeof(Corpus).Assembly.ManifestModule.ModuleVersionId).Append('\n');
+        foreach (var exclusion in exclusions) builder.Append(exclusion).Append('\n');
         foreach (var file in files)
         {
             var info = new FileInfo(file);

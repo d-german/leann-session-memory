@@ -206,9 +206,6 @@ static partial class Finder
         return (score, (low + high) / 2);
     }
 
-    static bool Mentions(string line, IReadOnlyList<string> terms) =>
-        terms.Any(term => line.Contains(term, StringComparison.OrdinalIgnoreCase));
-
     static string Utc(string timestamp) =>
         DateTimeOffset.TryParse(timestamp, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var time)
             ? time.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture)
@@ -259,21 +256,30 @@ static partial class Finder
     internal sealed class Scan
     {
         readonly Dictionary<(string Client, string SessionId), Found> found = [];
+        readonly string[][] forms;
         readonly string? only;
 
         public Scan(IReadOnlyList<string> terms, string? only = null)
         {
             Terms = terms;
+            forms = [.. terms.Select(Forms)];
             this.only = only;
         }
 
         public IReadOnlyList<string> Terms { get; }
 
+        // Raw JSON escapes backslashes and quotes, so a term such as a Windows path is also looked for in that form.
+        public static string[] Forms(string term) => [.. new[] { term, term.Replace("\\", "\\\\").Replace("\"", "\\\"") }.Distinct()];
+
+        public bool Mentions(string text) => forms.Any(term => Has(text, term));
+
+        static bool Has(string text, string[] term) => term.Any(form => text.Contains(form, StringComparison.OrdinalIgnoreCase));
+
         // The snippet is built only for the newest records holding every term, since walking JSON costs more than matching.
         public void Note(string client, string sessionId, string text, string timestamp, Func<Snippet?> snippet)
         {
             if (only is not null && !sessionId.StartsWith(only, StringComparison.OrdinalIgnoreCase)) return;
-            var present = Terms.Select(term => text.Contains(term, StringComparison.OrdinalIgnoreCase)).ToArray();
+            var present = forms.Select(term => Has(text, term)).ToArray();
             if (!present.Any(hit => hit)) return;
             if (!found.TryGetValue((client, sessionId), out var session)) found[(client, sessionId)] = session = new Found(Terms.Count);
             for (var index = 0; index < present.Length; index++) session.Mentions[index] += present[index] ? 1 : 0;
@@ -309,7 +315,7 @@ static partial class Finder
         var subagent = path.Split(Path.DirectorySeparatorChar).Any(part => part.Equals("subagents", StringComparison.OrdinalIgnoreCase));
         foreach (var line in Lines(path))
         {
-            if (!Mentions(line, scan.Terms) || line.Contains("\"tool_result\"", StringComparison.Ordinal)) continue;
+            if (!scan.Mentions(line) || line.Contains("\"tool_result\"", StringComparison.Ordinal)) continue;
             using var json = Jsonl.Parse(line);
             if (json is null) continue;
             var record = (JsonElement?)json.RootElement;
@@ -324,7 +330,7 @@ static partial class Finder
         var sessionId = Path.GetFileName(Path.GetDirectoryName(path)!);
         foreach (var line in Lines(path))
         {
-            if (!Mentions(line, scan.Terms)) continue;
+            if (!scan.Mentions(line)) continue;
             using var json = Jsonl.Parse(line);
             var record = (JsonElement?)json?.RootElement;
             if (!CopilotTypes.Contains(record.Get("type").AsString())) continue;
@@ -343,7 +349,7 @@ static partial class Finder
     static void ScanCodex(Scan scan, string history, long from, long to)
     {
         using var database = new SqliteReader(history);
-        var filter = string.Join(" OR ", scan.Terms.Select(term => $"item_json LIKE '%{LikeEscape(term)}%' ESCAPE '\\'"));
+        var filter = string.Join(" OR ", scan.Terms.SelectMany(Scan.Forms).Select(term => $"item_json LIKE '%{LikeEscape(term)}%' ESCAPE '\\'"));
         var query = $"SELECT thread_id, item_type, created_at_ms, item_json FROM thread_items WHERE rowid BETWEEN {from} AND {to} AND item_type IN " +
             $"('userMessage','agentMessage','commandExecution','mcpToolCall','fileChange','webSearch') AND ({filter})";
         foreach (var row in database.Query(query))
@@ -374,7 +380,7 @@ static partial class Finder
         var modified = File.GetLastWriteTimeUtc(path).ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture);
         foreach (var line in Lines(path))
         {
-            if (!Mentions(line, scan.Terms)) continue;
+            if (!scan.Mentions(line)) continue;
             var match = VsCodeTimestamp.Match(line);
             scan.Note("vscode-copilot", sessionId, line,
                 match.Success ? Utc(Transcript.IsoFromMs(double.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture))) : modified,
