@@ -61,6 +61,22 @@ static class SelfTest
         var escaped = new Finder.Scan(["C:\\hcw", "say \"hi\""]);
         escaped.Note("x", "s", """{"cwd":"C:\\hcw","text":"say \"hi\""}""", "2026-01-01T00:00:00", () => null);
         Check(escaped.Sessions.Values.SingleOrDefault()?.Mentions.All(count => count == 1) == true, "finds terms that JSON escapes");
+        Check(!Finder.Scan.HasWord("my param and program", "RAM") && Finder.Scan.HasWord("16 GB RAM", "ram")
+            && Finder.Scan.HasWord("param, then RAM, (RAM)", "RAM") && Finder.Scan.HasWord("{\"t\":\"a\\nRAM\"}", "RAM")
+            && !Finder.Scan.HasWord("RAM_SIZE", "RAM") && Finder.Scan.HasWord("cd C:\\hcw\\src", "C:\\hcw")
+            && !Finder.Scan.HasWord("XC:\\hcw", "C:\\hcw"), "matches whole words");
+        var whole = new Finder.Scan(["RAM"]);
+        var partial = new Finder.Scan(["RAM"], partial: true);
+        foreach (var scan in new[] { whole, partial }) scan.Note("x", "s", "set the param", "2026-01-01T00:00:00", () => null);
+        Check(!whole.Matches("set the param") && whole.Sessions.Count == 0 && partial.Matches("set the param") && partial.Sessions.Count == 1,
+            "matches substrings with --partial");
+        var self = new Finder.Scan(["RAM"]);
+        self.Note("x", "s", "& \"C:\\x\\SessionMemory.exe\" find RAM --top 3", "2026-01-01T00:00:00", () => null);
+        self.Note("x", "s", "powershell -File Search-SessionMemory.ps1 -Query \"RAM for the VM\"", "2026-01-01T00:00:00", () => null);
+        self.Note("x", "s", "SessionMemory show abc RAM", "2026-01-01T00:00:00", () => null);
+        self.Note("x", "s", """{"command":"& \"C:\\x\\SessionMemory.exe\" find RAM"}""", "2026-01-01T00:00:00", () => null);
+        Check(self.Sessions.Count == 0 && !self.Matches("SessionMemory search RAM") && self.Matches("SessionMemory found 4 GB RAM"),
+            "skips the memory tool's own invocations");
         using (var toolUse = JsonDocument.Parse("{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file_path\":\"C:\\\\x.md\",\"content\":\"threat model " +
             new string('a', 400) + " T05 RabbitMQ threat merged " + new string('b', 400) + "\"}}"))
         {

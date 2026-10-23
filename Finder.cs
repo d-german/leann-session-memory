@@ -20,7 +20,7 @@ static partial class Finder
     const int WindowChars = 300;
 
     // With a session ID (or prefix), lists every matching excerpt in that session instead of one per session.
-    public static int Run(string root, string home, IReadOnlyList<string> terms, int top, bool json, string? only = null)
+    public static int Run(string root, string home, IReadOnlyList<string> terms, int top, bool json, string? only = null, bool partial = false)
     {
         var stopwatch = Stopwatch.StartNew();
         var manifest = Store.Load<Manifest>(Path.Combine(root, "state", "manifest.json"));
@@ -50,7 +50,7 @@ static partial class Finder
         var found = new Dictionary<(string Client, string SessionId), Found>();
         var scans = Partitioner.Create(work, loadBalance: true).AsParallel().Select(item =>
         {
-            var scan = new Scan(terms, only);
+            var scan = new Scan(terms, only, partial);
             item(scan);
             return scan;
         });
@@ -258,12 +258,14 @@ static partial class Finder
         readonly Dictionary<(string Client, string SessionId), Found> found = [];
         readonly string[][] forms;
         readonly string? only;
+        readonly bool partial;
 
-        public Scan(IReadOnlyList<string> terms, string? only = null)
+        public Scan(IReadOnlyList<string> terms, string? only = null, bool partial = false)
         {
             Terms = terms;
             forms = [.. terms.Select(Forms)];
             this.only = only;
+            this.partial = partial;
         }
 
         public IReadOnlyList<string> Terms { get; }
@@ -271,15 +273,51 @@ static partial class Finder
         // Raw JSON escapes backslashes and quotes, so a term such as a Windows path is also looked for in that form.
         public static string[] Forms(string term) => [.. new[] { term, term.Replace("\\", "\\\\").Replace("\"", "\\\"") }.Distinct()];
 
-        public bool Mentions(string text) => forms.Any(term => Has(text, term));
+        // A cheap substring prefilter; Note applies whole-word matching and self-invocation filtering.
+        public bool Mentions(string text) => forms.Any(term => Has(text, term, true));
 
-        static bool Has(string text, string[] term) => term.Any(form => text.Contains(form, StringComparison.OrdinalIgnoreCase));
+        static bool Has(string text, string[] term, bool partial) =>
+            term.Any(form => partial ? text.Contains(form, StringComparison.OrdinalIgnoreCase) : HasWord(text, form));
+
+        // An occurrence counts only if an alphanumeric edge of the term is not continued by a word character.
+        public static bool HasWord(string text, string term)
+        {
+            if (term.Length == 0) return false;
+            var checkStart = char.IsLetterOrDigit(term[0]);
+            var checkEnd = char.IsLetterOrDigit(term[^1]);
+            for (var at = text.IndexOf(term, StringComparison.OrdinalIgnoreCase); at >= 0;
+                 at = at + 1 < text.Length ? text.IndexOf(term, at + 1, StringComparison.OrdinalIgnoreCase) : -1)
+            {
+                var end = at + term.Length;
+                if (checkStart && at > 0 && IsWordChar(text[at - 1]) && !AfterEscape(text, at - 1)) continue;
+                if (checkEnd && end < text.Length && IsWordChar(text[end])) continue;
+                return true;
+            }
+            return false;
+        }
+
+        static bool IsWordChar(char value) => char.IsLetterOrDigit(value) || value == '_';
+
+        // In raw JSON, "\nRAM" is a line break before the word, not the letter n; an odd run of backslashes marks an escape.
+        static bool AfterEscape(string text, int at)
+        {
+            if ("nrtbf".IndexOf(text[at]) < 0) return false;
+            var slashes = 0;
+            for (var index = at - 1; index >= 0 && text[index] == '\\'; index--) slashes++;
+            return slashes % 2 == 1;
+        }
+
+        // The memory tool's own commands mention every term searched for, so they would make the searching session rank first.
+        public static bool IsSelfInvocation(string text) => SelfInvocation().IsMatch(text);
+
+        public bool Matches(string text) => !IsSelfInvocation(text) && forms.All(term => Has(text, term, partial));
 
         // The snippet is built only for the newest records holding every term, since walking JSON costs more than matching.
         public void Note(string client, string sessionId, string text, string timestamp, Func<Snippet?> snippet)
         {
             if (only is not null && !sessionId.StartsWith(only, StringComparison.OrdinalIgnoreCase)) return;
-            var present = forms.Select(term => Has(text, term)).ToArray();
+            if (IsSelfInvocation(text)) return;
+            var present = forms.Select(term => Has(text, term, partial)).ToArray();
             if (!present.Any(hit => hit)) return;
             if (!found.TryGetValue((client, sessionId), out var session)) found[(client, sessionId)] = session = new Found(Terms.Count);
             for (var index = 0; index < present.Length; index++) session.Mentions[index] += present[index] ? 1 : 0;
@@ -394,4 +432,8 @@ static partial class Finder
 
     [GeneratedRegex("\"timestamp\":(\\d{13})", RegexOptions.Compiled)]
     private static partial Regex MyRegex();
+
+    // Raw JSON logs escape the quote after the executable, hence the optional backslash.
+    [GeneratedRegex("(?i)Search-SessionMemory\\.ps1|SessionMemory(\\.exe)?\\\\?[\"']?\\s+(search|find|show)\\b")]
+    private static partial Regex SelfInvocation();
 }

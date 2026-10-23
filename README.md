@@ -41,7 +41,8 @@ Assistants run these on their own; you can too.
 ```powershell
 $memory = "$env:LOCALAPPDATA\LeannSessionMemory\bin\SessionMemory.exe"
 & $memory search "what did we decide about the retry limit"   # by meaning
-& $memory find RabbitMQ threat                                 # exact terms, including file edits and commands
+& $memory find RabbitMQ threat                                 # exact terms as whole words, including file edits and commands
+& $memory find RAM --partial                                   # substring matching, e.g. also "param"
 & $memory find RabbitMQ threat --session <session id>          # every match inside one session
 & $memory show <session id> --last 15                          # a session's latest messages
 & $memory show <session id> --around "T15|T22"                 # messages matching a pattern
@@ -51,6 +52,10 @@ $memory = "$env:LOCALAPPDATA\LeannSessionMemory\bin\SessionMemory.exe"
 
 `search` and `find` print compact text grouped by session; add `--json` for machine-readable output.
 
+`search` works best with one plain natural-language question describing what happened ("What hardware specs did I
+request for my new Linux VM?"), not a list of keywords; if the top results miss, rephrase and search again. Use `find`
+only for exact names, IDs, numbers, paths or error text.
+
 ## How it works
 
 - Every minute the watcher re-reads the clients whose files changed and writes one Markdown transcript per session:
@@ -58,7 +63,9 @@ $memory = "$env:LOCALAPPDATA\LeannSessionMemory\bin\SessionMemory.exe"
 - Changed sessions go into a small "recent" LEANN index that rebuilds in seconds once a session has been quiet for
   90 seconds. The full archive rebuilds after about 4 MB of changes. One query ranks both.
 - A resident `leann-dotnet --serve` process keeps searches at about a second.
-- `find` scans the raw logs in parallel, including tool inputs that never reach the transcripts.
+- `find` scans the raw logs in parallel, including tool inputs that never reach the transcripts. A term matches only
+  as a whole word (`RAM` doesn't match `param`) unless `--partial` is given, and records that run the memory tools
+  themselves are skipped, so a session's own searches don't rank it first.
 
 ## Privacy
 

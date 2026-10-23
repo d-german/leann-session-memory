@@ -7,7 +7,7 @@ namespace SessionMemory;
 static class Program
 {
     const string Usage = "Usage: SessionMemory [--root <path>] run [--once] [--force] | search <query> [--top-k <n>] [--json] | " +
-        "find <term> [<term> ...] [--top <n>] [--session <id>] [--json] | show <session-id> [--last <n>] [--around <regex>] [--context <n>] [--max <n>] [--chars <n>] | " +
+        "find <term> [<term> ...] [--top <n>] [--session <id>] [--partial] [--json] | show <session-id> [--last <n>] [--around <regex>] [--context <n>] [--max <n>] [--chars <n>] | " +
         "exclude <session-id> | include <session-id> | capture | status | self-test";
 
     static int Main(string[] args)
@@ -79,11 +79,12 @@ static class Program
     static int Find(string root, string home, List<string> arguments)
     {
         var json = arguments.Remove("--json");
+        var partial = arguments.Remove("--partial");
         var top = Option(arguments, "--top") is { } value ? int.Parse(value, CultureInfo.InvariantCulture) : 8;
         var session = Option(arguments, "--session");
         var terms = arguments.Skip(1).Where(term => term.Trim().Length > 0).ToList();
         if (terms.FirstOrDefault(term => term.StartsWith("--", StringComparison.Ordinal)) is { } unknown) return Fail($"Unknown option '{unknown}'.\n{Usage}", 2);
-        return Finder.Run(root, home, terms, Math.Clamp(top, 1, 50), json, session?.Trim());
+        return Finder.Run(root, home, terms, Math.Clamp(top, 1, 50), json, session?.Trim(), partial);
     }
 
     static int Show(string root, List<string> arguments)
