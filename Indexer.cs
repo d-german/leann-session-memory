@@ -143,7 +143,7 @@ namespace SessionMemory
 
         // One LEANN query ranks both indexes together. Each index's own scores are rank positions and cannot be
         // compared, so merging two separate searches let the small recent index outrank better archive matches.
-        public static int Search(string root, string query, int topK, bool json, bool includeCurrent = false)
+        public static int Search(string root, string query, int topK, bool json, bool includeCurrent = false, string? onlySession = null)
         {
             var tiers = Tiers.Where(tier => Exists(root, tier)).ToList();
             if (tiers.Count == 0)
@@ -167,13 +167,23 @@ namespace SessionMemory
             var documents = Store.Load<Manifest>(Path.Combine(root, "state", "manifest.json"))?.Documents ?? [];
             // Exclusions apply before the next capture removes the session from the corpus.
             var exclusions = Corpus.SearchExclusions(root, includeCurrent);
-            var current = documents.Where(pair => !Corpus.IsExcluded(pair.Value.SessionId, exclusions)).Select(pair => pair.Key).ToHashSet();
+            var current = Visible(documents, exclusions, onlySession);
             var ranked = found.OfType<JsonObject>().Select(hit => hit.DeepClone().AsObject());
-            var hits = Filter(ranked, tiers, recent, current, topK);
+            // An empty set keeps every hit when there is no manifest, but a session with no indexed document has none.
+            var hits = onlySession is not null && current.Count == 0 ? [] : Filter(ranked, tiers, recent, current, topK);
             if (json) WriteJson(root, query, source, hits, documents);
             else WriteText(source, hits, documents);
             return 0;
         }
+
+        // The documents a search may show; onlySession narrows them to one session and its subagents.
+        public static HashSet<string> Visible(IReadOnlyDictionary<string, DocumentMeta> documents, IReadOnlyCollection<string> exclusions, string? onlySession) =>
+        [
+            .. documents
+                .Where(pair => !Corpus.IsExcluded(pair.Value.SessionId, exclusions)
+                               && (onlySession is null || pair.Value.SessionId.StartsWith(onlySession, StringComparison.OrdinalIgnoreCase)))
+                .Select(pair => pair.Key)
+        ];
 
         // Labels each hit with its tier and keeps LEANN's order. A one-index search carries no index name.
         public static List<JsonObject> Filter(IEnumerable<JsonObject> ranked, IReadOnlyList<string> tiers, IReadOnlySet<string> recent, IReadOnlySet<string> current, int topK)

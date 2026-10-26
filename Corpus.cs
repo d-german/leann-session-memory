@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+﻿using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -83,7 +84,9 @@ namespace SessionMemory
     {
         private const int ManifestVersion = 3;
         private const int MinimumSessionIdLength = 8;
-        private const string CurrentSessionVariable = "COPILOT_AGENT_SESSION_ID";
+        // Agent hosts that tell the commands they run which session runs them: GitHub Copilot CLI, Codex (0.95+) and Claude Code (2.1.132+).
+        // Each value is the session ID this tool indexes. Hosts that set none of them exclude nothing.
+        public static readonly ImmutableArray<string> CurrentSessionVariables = ["COPILOT_AGENT_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID"];
         private static readonly UTF8Encoding NoBom = new(false);
 
         public static CaptureReport Capture(string root, IReadOnlyList<Family> families)
@@ -218,12 +221,18 @@ namespace SessionMemory
 
         public static List<string> LoadExclusions(string root) => Store.Load<List<string>>(ExclusionsPath(root)) ?? [];
 
+        // The ID is matched by prefix, so a value too short to be safe counts as no session.
+        public static string? CurrentSession() =>
+            CurrentSessionVariables
+                .Select(name => Environment.GetEnvironmentVariable(name)?.Trim())
+                .FirstOrDefault(value => value is { Length: >= MinimumSessionIdLength });
+
         // The session running a search only echoes the question, so searches leave it out unless asked not to.
         // The ID is matched like any exclusion, so a short value must not drop unrelated sessions.
         public static List<string> SearchExclusions(string root, bool includeCurrent, string? currentSession = null)
         {
             var exclusions = LoadExclusions(root);
-            currentSession ??= Environment.GetEnvironmentVariable(CurrentSessionVariable);
+            currentSession ??= CurrentSession();
             if (!includeCurrent && currentSession?.Trim() is { Length: >= MinimumSessionIdLength } id) exclusions.Add(id);
             return exclusions;
         }

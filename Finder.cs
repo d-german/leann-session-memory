@@ -10,26 +10,29 @@ namespace SessionMemory
 {
     /// <summary>
     /// Exact-term search over the raw stores. Unlike the semantic index it also covers tool inputs such as edits,
-    /// commands and page updates, whose full text would nearly triple the index. Tool outputs stay out as noise.
+    /// commands and page updates, whose full text would nearly triple the index. Tool outputs stay out as noise unless asked for.
     /// </summary>
     internal static partial class Finder
     {
+        private const string CopilotOutput = "tool.execution_complete";
         private static readonly string[] CopilotTypes = ["user.message", "assistant.message", "tool.execution_start"];
         private static readonly Regex VsCodeTimestamp = MyRegex();
         private const int WindowChars = 300;
 
         // With a session ID (or prefix), lists every matching excerpt in that session instead of one per session.
-        public static int Run(string root, string home, IReadOnlyList<string> terms, int top, bool json, string? only = null, bool partial = false, bool includeCurrent = false)
+        // since keeps only records at or after that time; outputs adds Copilot CLI tool results to what is searched.
+        public static int Run(string root, string home, IReadOnlyList<string> terms, int top, bool json, string? only = null, bool partial = false, bool includeCurrent = false,
+            DateTimeOffset? since = null, bool outputs = false)
         {
             var stopwatch = Stopwatch.StartNew();
             var manifest = Store.Load<Manifest>(Path.Combine(root, "state", "manifest.json"));
             var documents = manifest?.Documents ?? [];
-            var work = WorkItems(home, documents);
+            var work = WorkItems(home, documents, outputs);
             // Load balancing hands files out one at a time, so a few large logs don't pile up on one core.
             var found = new Dictionary<(string Client, string SessionId), Found>();
             var scans = Partitioner.Create(work, loadBalance: true).AsParallel().Select(item =>
             {
-                var scan = new Scan(terms, only, partial);
+                var scan = new Scan(terms, only, partial, since);
                 item(scan);
                 return scan;
             });
@@ -44,14 +47,15 @@ namespace SessionMemory
                 .ThenByDescending(pair => pair.Value.LastMention, StringComparer.Ordinal)
                 .ToList();
             var listed = sessions.Take(only is null ? top : 20).ToList();
-            if (json) WriteJson(root, terms, top, only, sessions.Count, listed, byId, stopwatch);
-            else WriteText(terms, top, only, sessions.Count, listed, byId);
+            var after = since is { } time ? Utc(time) : null;
+            if (json) WriteJson(root, terms, top, only, after, sessions.Count, listed, byId, stopwatch);
+            else WriteText(terms, top, only, after, sessions.Count, listed, byId);
             return 0;
         }
 
         // Files are independent, so each one is a work item scanned on its own core; the Codex query goes first,
         // since it is the longest single item.
-        private static List<Action<Scan>> WorkItems(string home, Dictionary<string, DocumentMeta> documents)
+        private static List<Action<Scan>> WorkItems(string home, Dictionary<string, DocumentMeta> documents, bool outputs)
         {
             var vsCodeSessions = documents.Values.Where(document => document.Family == "vscode")
                 .GroupBy(document => document.SourceRef, StringComparer.OrdinalIgnoreCase)
@@ -69,18 +73,19 @@ namespace SessionMemory
                 }
             }
             work.AddRange(Parsers.Rglob(Path.Combine(home, ".claude", "projects"), "*.jsonl").Select(path => (Action<Scan>)(scan => ScanClaude(scan, path))));
-            work.AddRange(Parsers.CopilotEventFiles(home).Select(path => (Action<Scan>)(scan => ScanCopilot(scan, path))));
+            work.AddRange(Parsers.CopilotEventFiles(home).Select(path => (Action<Scan>)(scan => ScanCopilot(scan, path, outputs))));
             work.AddRange(Parsers.ChatFiles(Parsers.CodeUser(home)).Select(path => (Action<Scan>)(scan =>
                 ScanVsCode(scan, path, vsCodeSessions.GetValueOrDefault(path) ?? Path.GetFileNameWithoutExtension(path)))));
             return work;
         }
 
-        private static void WriteText(IReadOnlyList<string> terms, int top, string? only, int matching,
+        private static void WriteText(IReadOnlyList<string> terms, int top, string? only, string? since, int matching,
             List<KeyValuePair<(string Client, string SessionId), Found>> listed, Dictionary<string, KeyValuePair<string, DocumentMeta>> byId)
         {
+            var window = since is null ? "" : $" since {since.Replace('T', ' ')} UTC";
             var text = new StringBuilder(only is null
-                ? $"{matching} sessions contain all of: {string.Join(", ", terms)}. Newest first; showing {listed.Count}.\n"
-                : $"{matching} sessions starting with {only} contain all of: {string.Join(", ", terms)}. Excerpts newest first, up to {top} each.\n");
+                ? $"{matching} sessions contain all of: {string.Join(", ", terms)}{window}. Newest first; showing {listed.Count}.\n"
+                : $"{matching} sessions starting with {only} contain all of: {string.Join(", ", terms)}{window}. Excerpts newest first, up to {top} each.\n");
             foreach (var ((client, sessionId), session) in listed)
             {
                 var indexed = byId.TryGetValue(sessionId, out var document);
@@ -92,7 +97,7 @@ namespace SessionMemory
             Compact.Write(Compact.Plain(text.ToString()));
         }
 
-        private static void WriteJson(string root, IReadOnlyList<string> terms, int top, string? only, int matching,
+        private static void WriteJson(string root, IReadOnlyList<string> terms, int top, string? only, string? since, int matching,
             List<KeyValuePair<(string Client, string SessionId), Found>> listed, Dictionary<string, KeyValuePair<string, DocumentMeta>> byId, Stopwatch stopwatch)
         {
             var results = new JsonArray();
@@ -127,6 +132,7 @@ namespace SessionMemory
                 ["seconds"] = Math.Round(stopwatch.Elapsed.TotalSeconds, 1),
                 ["sessions"] = results
             };
+            if (since is not null) response["since"] = since;
             Console.Out.WriteLine(Indexer.Ascii(response.ToJsonString(new JsonSerializerOptions
             {
                 WriteIndented = true
@@ -261,8 +267,10 @@ namespace SessionMemory
 
         private static string Utc(string timestamp) =>
             DateTimeOffset.TryParse(timestamp, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var time)
-                ? time.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture)
+                ? Utc(time)
                 : "";
+
+        private static string Utc(DateTimeOffset time) => time.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture);
 
         private static IEnumerable<string> Lines(string path)
         {
@@ -312,13 +320,15 @@ namespace SessionMemory
             private readonly string[][] _forms;
             private readonly string? _only;
             private readonly bool _partial;
+            private readonly string? _since;
 
-            public Scan(IReadOnlyList<string> terms, string? only = null, bool partial = false)
+            public Scan(IReadOnlyList<string> terms, string? only = null, bool partial = false, DateTimeOffset? since = null)
             {
                 Terms = terms;
                 _forms = [.. terms.Select(Forms)];
                 _only = only;
                 _partial = partial;
+                _since = since is { } time ? Utc(time) : null;
             }
 
             public IReadOnlyList<string> Terms { get; }
@@ -368,7 +378,11 @@ namespace SessionMemory
             }
 
             // The memory tool's own commands mention every term searched for, so they would make the searching session rank first.
-            public static bool IsSelfInvocation(string text) => SelfInvocation().IsMatch(text);
+            // Besides a direct run, it may be run from a variable (& $exe find) or by dotnet run after "--"; those count only
+            // beside a mention of one of its files, so prose about the tool does not.
+            public static bool IsSelfInvocation(string text) =>
+                text.Contains("SessionMemory", StringComparison.OrdinalIgnoreCase)
+                && (SelfInvocation().IsMatch(text) || ToolFile().IsMatch(text) && IndirectInvocation().IsMatch(text));
 
             public bool Matches(string text) => !IsSelfInvocation(text) && _forms.All(term => Has(text, term, _partial));
 
@@ -376,6 +390,8 @@ namespace SessionMemory
             public void Note(string client, string sessionId, string text, string timestamp, Func<Snippet?> snippet)
             {
                 if (_only is not null && !sessionId.StartsWith(_only, StringComparison.OrdinalIgnoreCase)) return;
+                // Timestamps share one UTC format, so they compare as text; one that could not be parsed is empty and comes first.
+                if (_since is not null && string.CompareOrdinal(timestamp, _since) < 0) return;
                 if (IsSelfInvocation(text)) return;
                 var present = _forms.Select(term => Has(text, term, _partial)).ToArray();
                 if (!present.Any(hit => hit)) return;
@@ -449,19 +465,57 @@ namespace SessionMemory
             return json is null ? null : Excerpt(json.RootElement.TryGetProperty("message", out var message) ? message : json.RootElement, "", terms);
         }
 
-        private static void ScanCopilot(Scan scan, string path)
+        private static void ScanCopilot(Scan scan, string path, bool outputs)
         {
             var sessionId = Path.GetFileName(Path.GetDirectoryName(path)!);
+            var selfCalls = outputs ? new HashSet<string>(StringComparer.Ordinal) : null;
             foreach (var line in Lines(path))
             {
-                if (!scan.Mentions(line)) continue;
-                using var json = Jsonl.Parse(line);
-                var record = json?.RootElement;
-                if (!CopilotTypes.Contains(record.Get("type").AsString())) continue;
-                scan.Note("copilot", sessionId, line, Utc(record.Get("timestamp").StrOr("")),
-                    () => record.Get("data") is { } data ? Excerpt(data, record.Get("type").Str(), scan.Terms) : null);
+                if (selfCalls is not null) RememberSelfCall(line, selfCalls);
+                if (scan.Mentions(line)) NoteCopilot(scan, sessionId, line, selfCalls);
             }
         }
+
+        // Tool results count only when selfCalls is given, which is when they are asked for.
+        private static void NoteCopilot(Scan scan, string sessionId, string line, HashSet<string>? selfCalls)
+        {
+            using var json = Jsonl.Parse(line);
+            var record = json?.RootElement;
+            var type = record.Get("type").AsString();
+            if (type == CopilotOutput && selfCalls is not null) NoteCopilotOutput(scan, sessionId, record, selfCalls);
+            else if (CopilotTypes.Contains(type))
+                scan.Note("copilot", sessionId, line, Utc(record.Get("timestamp").StrOr("")),
+                    () => record.Get("data") is { } data ? Excerpt(data, record.Get("type").Str(), scan.Terms) : null);
+        }
+
+        // Results of the memory tool's own runs repeat what it found in other sessions, so the calls that started them are remembered.
+        private static void RememberSelfCall(string line, HashSet<string> selfCalls)
+        {
+            if (!line.Contains("\"tool.execution_start\"", StringComparison.Ordinal) || !Scan.IsSelfInvocation(line)) return;
+            using var json = Jsonl.Parse(line);
+            var record = json?.RootElement;
+            if (record.Get("type").AsString() == "tool.execution_start" && record.Get("data").Get("toolCallId").AsString() is { } id) selfCalls.Add(id);
+        }
+
+        // A result is matched on its content or error alone, since its telemetry repeats the call's arguments.
+        private static void NoteCopilotOutput(Scan scan, string sessionId, JsonElement? record, HashSet<string> selfCalls)
+        {
+            var data = record.Get("data");
+            if (data.Get("toolCallId").AsString() is { } id && selfCalls.Contains(id)) return;
+            var result = data.Get("result");
+            if ((result ?? data.Get("error")) is not { } output) return;
+            var label = result is null ? "tool error" : "tool output";
+            scan.Note("copilot", sessionId, output.GetRawText(), Utc(record.Get("timestamp").StrOr("")), () => OutputExcerpt(output, label, scan.Terms));
+        }
+
+        // A result carries no tool name, and a nested "name" would relabel its path, so the label goes in front.
+        private static Snippet? OutputExcerpt(JsonElement output, string label, IReadOnlyList<string> terms) =>
+            Excerpt(output, "", terms) is { } excerpt
+                ? excerpt with
+                {
+                    Where = $"{label} {excerpt.Where}".TrimEnd()
+                }
+                : null;
 
         private static (long First, long Last) RowRange(string history)
         {
@@ -523,7 +577,14 @@ namespace SessionMemory
         private static partial Regex Whitespace();
 
         // Raw JSON logs escape the quote after the executable, hence the optional backslash.
-        [GeneratedRegex("(?i)Search-SessionMemory\\.ps1|SessionMemory(\\.exe)?\\\\?[\"']?\\s+(search|find|show)\\b")]
+        [GeneratedRegex("(?i)Search-SessionMemory\\.ps1|SessionMemory(\\.exe|\\.dll)?\\\\?[\"']?\\s+(--root\\s+\\S+\\s+)?(search|find|show)\\b")]
         private static partial Regex SelfInvocation();
+
+        [GeneratedRegex(@"(?i)SessionMemory\.(exe|dll|csproj)\b")]
+        private static partial Regex ToolFile();
+
+        // A command after a variable holding the executable (& $exe find, "$exe" find) or after the "--" that ends dotnet run's own options.
+        [GeneratedRegex(@"(?i)(\$\{?\w+\}?\\?[""']?|(?<=\s)--)\s+(--root\s+\S+\s+)?(search|find|show)\s")]
+        private static partial Regex IndirectInvocation();
     }
 }

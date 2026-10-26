@@ -6,9 +6,11 @@ namespace SessionMemory
 {
     internal static class Program
     {
-        private const string Usage = "Usage: SessionMemory [--root <path>] run [--once] [--force] | search <query> [--top-k <n>] [--json] [--include-current] | " +
-                                     "find <term> [<term> ...] [--top <n>] [--session <id>] [--partial] [--json] [--include-current] | show <session-id> [--last <n>] [--around <regex>] [--context <n>] [--max <n>] [--chars <n>] | " +
+        private const string Usage = "Usage: SessionMemory [--root <path>] run [--once] [--force] | search <query> [--top-k <n>] [--json] [--include-current] [--current] | " +
+                                     "find <term> [<term> ...] [--top <n>] [--session <id>] [--partial] [--json] [--include-current] [--current] [--since <time>] [--outputs] | " +
+                                     "show <session-id>|--current [--last <n>] [--around <regex>] [--context <n>] [--max <n>] [--chars <n>] | " +
                                      "exclude <session-id> | include <session-id> | capture | status | self-test";
+        private const string Undetected = "The current session could not be detected; give its session ID instead.";
 
         private static int Main(string[] args)
         {
@@ -61,8 +63,12 @@ namespace SessionMemory
         {
             var json = arguments.Remove("--json");
             var includeCurrent = arguments.Remove("--include-current");
+            var current = arguments.Remove("--current");
             var topK = Option(arguments, "--top-k") is { } value ? int.Parse(value, CultureInfo.InvariantCulture) : 8;
-            return Indexer.Search(root, string.Join(' ', arguments.Skip(1)), Math.Clamp(topK, 1, 50), json, includeCurrent);
+            // --current lets an agent whose context was compacted search its own session.
+            var only = current ? Corpus.CurrentSession() : null;
+            if (current && only is null) return Fail(Undetected, 2);
+            return Indexer.Search(root, string.Join(' ', arguments.Skip(1)), Math.Clamp(topK, 1, 50), json, includeCurrent || current, only);
         }
 
         private static int Capture(string root, string home)
@@ -88,22 +94,40 @@ namespace SessionMemory
             var json = arguments.Remove("--json");
             var partial = arguments.Remove("--partial");
             var includeCurrent = arguments.Remove("--include-current");
+            var current = arguments.Remove("--current");
+            var outputs = arguments.Remove("--outputs");
             var top = Option(arguments, "--top") is { } value ? int.Parse(value, CultureInfo.InvariantCulture) : 8;
             var session = Option(arguments, "--session");
+            var sinceText = Option(arguments, "--since");
             var terms = arguments.Skip(1).Where(term => term.Trim().Length > 0).ToList();
             if (terms.FirstOrDefault(term => term.StartsWith("--", StringComparison.Ordinal)) is { } unknown) return Fail($"Unknown option '{unknown}'.\n{Usage}", 2);
-            return Finder.Run(root, home, terms, Math.Clamp(top, 1, 50), json, session?.Trim(), partial, includeCurrent);
+            DateTimeOffset? since = null;
+            if (sinceText is not null)
+            {
+                // A time without an offset is read as UTC.
+                if (!DateTimeOffset.TryParse(sinceText, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed))
+                    return Fail($"'{sinceText}' is not a valid time for --since.\n{Usage}", 2);
+                since = parsed;
+            }
+            if (current && session is not null) return Fail("Use either --current or --session, not both.", 2);
+            var only = current ? Corpus.CurrentSession() : session?.Trim();
+            if (current && only is null) return Fail(Undetected, 2);
+            return Finder.Run(root, home, terms, Math.Clamp(top, 1, 50), json, only, partial, includeCurrent || current, since: since, outputs: outputs);
         }
 
         private static int Show(string root, List<string> arguments)
         {
             int Number(string name, int fallback) => Option(arguments, name) is { } value ? int.Parse(value, CultureInfo.InvariantCulture) : fallback;
+            var current = arguments.Remove("--current");
             var (last, context, max, chars) = (Number("--last", 10), Number("--context", 0), Number("--max", 6), Number("--chars", 1200));
             var around = Option(arguments, "--around");
-            if (arguments.Count != 2 || arguments[1].StartsWith("--", StringComparison.Ordinal)) return Fail(Usage, 2);
+            if (current && arguments.Count == 2 && !arguments[1].StartsWith("--", StringComparison.Ordinal)) return Fail("Use either a session ID or --current, not both.", 2);
+            if (arguments.Count != (current ? 1 : 2) || arguments.Skip(1).Any(argument => argument.StartsWith("--", StringComparison.Ordinal))) return Fail(Usage, 2);
+            var id = current ? Corpus.CurrentSession() : arguments[1].Trim();
+            if (id is null) return Fail(Undetected, 2);
             try
             {
-                Compact.Write(Compact.Show(root, arguments[1].Trim(), Math.Clamp(last, 1, 200), around, Math.Clamp(context, 0, 5), Math.Clamp(max, 1, 50),
+                Compact.Write(Compact.Show(root, id, Math.Clamp(last, 1, 200), around, Math.Clamp(context, 0, 5), Math.Clamp(max, 1, 50),
                     Math.Clamp(chars, 200, 20_000)));
                 return 0;
             }

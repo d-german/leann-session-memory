@@ -107,6 +107,42 @@ namespace SessionMemory
             Check(Corpus.SearchExclusions(missingRoot, false, "19815249-ee80").SequenceEqual(["19815249-ee80"]), "searches leave out the current session");
             Check(Corpus.SearchExclusions(missingRoot, true, "19815249-ee80").Count == 0, "--include-current keeps the current session");
             Check(Corpus.SearchExclusions(missingRoot, false, "abc").Count == 0, "ignores a current session ID too short to be safe");
+            var saved = Corpus.CurrentSessionVariables.ToDictionary(name => name, Environment.GetEnvironmentVariable);
+            try
+            {
+                foreach (var name in Corpus.CurrentSessionVariables) Environment.SetEnvironmentVariable(name, null);
+                Check(Corpus.CurrentSession() is null, "detects no current session when no host sets one");
+                Environment.SetEnvironmentVariable("COPILOT_AGENT_SESSION_ID", "abcdef12-3456");
+                Check(Corpus.CurrentSession() == "abcdef12-3456", "detects the current Copilot session");
+                Environment.SetEnvironmentVariable("COPILOT_AGENT_SESSION_ID", "abc");
+                Check(Corpus.CurrentSession() is null, "ignores a detected session ID too short to be safe");
+                Environment.SetEnvironmentVariable("CLAUDE_CODE_SESSION_ID", " 0f1e2d3c-4b5a ");
+                Check(Corpus.CurrentSession() == "0f1e2d3c-4b5a", "detects the current Claude Code session");
+                Environment.SetEnvironmentVariable("CODEX_THREAD_ID", "9a8b7c6d-5e4f");
+                Check(Corpus.CurrentSession() == "9a8b7c6d-5e4f", "detects the current Codex thread");
+            }
+            finally
+            {
+                foreach (var (name, value) in saved) Environment.SetEnvironmentVariable(name, value);
+            }
+            var sessions = new Dictionary<string, DocumentMeta>
+            {
+                ["parent.md"] = new()
+                {
+                    SessionId = "abcdef12-3456"
+                },
+                ["subagent.md"] = new()
+                {
+                    SessionId = "ABCDEF12-3456:subagent:x"
+                },
+                ["other.md"] = new()
+                {
+                    SessionId = "99999999-0000"
+                }
+            };
+            Check(Indexer.Visible(sessions, [], "abcdef12").Order().SequenceEqual(["parent.md", "subagent.md"])
+                  && Indexer.Visible(sessions, ["99999999"], null).Order().SequenceEqual(["parent.md", "subagent.md"])
+                  && Indexer.Visible(sessions, ["abcdef12"], "abcdef12").Count == 0, "narrows a search to one session and its subagents");
         }
 
         private static void FinderChecks()
@@ -141,6 +177,9 @@ namespace SessionMemory
             self.Note("x", "s", """{"command":"& \"C:\\x\\SessionMemory.exe\" find RAM"}""", "2026-01-01T00:00:00", () => null);
             Check(self.Sessions.Count == 0 && !self.Matches("SessionMemory search RAM") && self.Matches("SessionMemory found 4 GB RAM"),
                 "skips the memory tool's own invocations");
+            Check(Finder.Scan.IsSelfInvocation("$exe=\"C:\\x\\SessionMemory.exe\"; & $exe find RAM --top 3")
+                  && Finder.Scan.IsSelfInvocation("dotnet run --project SessionMemory\\SessionMemory.csproj --no-build -- find RAM")
+                  && !Finder.Scan.IsSelfInvocation("The SessionMemory tool can find sessions quickly."), "recognizes invocations through a variable or dotnet run");
             using (var toolUse = JsonDocument.Parse("{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file_path\":\"C:\\\\x.md\",\"content\":\"threat model " +
                                                     new string('a', 400) + " T05 RabbitMQ threat merged " + new string('b', 400) + "\"}}"))
             {
