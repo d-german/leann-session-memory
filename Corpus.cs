@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CSharpFunctionalExtensions;
+using SessionMemory.Clients;
 
 namespace SessionMemory
 {
@@ -87,14 +88,17 @@ namespace SessionMemory
     {
         private const int ManifestVersion = 3;
         private const int MinimumSessionIdLength = 8;
-        // Agent hosts that tell the commands they run which session runs them: GitHub Copilot CLI, Codex (0.95+) and Claude Code (2.1.132+).
+        // The variables agent hosts set to tell the commands they run which session runs them, in the registry's order of precedence.
         // Each value is the session ID this tool indexes. Hosts that set none of them exclude nothing.
-        public static readonly ImmutableArray<string> CurrentSessionVariables = ["COPILOT_AGENT_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID"];
+        public static readonly ImmutableArray<string> CurrentSessionVariables =
+            [.. ClientRegistry.SessionHosts.Select(client => client.SessionVariable).OfType<string>()];
         private static readonly UTF8Encoding NoBom = new(false);
 
-        public static CaptureReport Capture(string root, ImmutableArray<Family> families)
+        // Each client is a family of the manifest; the clients are read in order, so the manifest lists their families in that order.
+        public static CaptureReport Capture(ClientContext context, ImmutableArray<ISessionClient> clients)
         {
             var stopwatch = Stopwatch.StartNew();
+            var root = context.Root;
             var corpus = Path.Combine(root, "corpus");
             var manifestPath = Path.Combine(root, "state", "manifest.json");
             var previous = Store.Load<Manifest>(manifestPath) ?? new Manifest();
@@ -103,16 +107,16 @@ namespace SessionMemory
             var reports = new Dictionary<string, FamilyReport>();
             var reparsed = new List<string>();
             ImmutableArray<string> exclusions = [.. LoadExclusions(root)];
-            foreach (var family in families)
+            foreach (var client in clients)
             {
-                var fingerprint = Fingerprint(family.Sources(), exclusions);
-                if (Unchanged(previous, family.Name, fingerprint).TryGetValue(out var known))
+                var fingerprint = Fingerprint(client.Sources(context), exclusions);
+                if (Unchanged(previous, client.Name, fingerprint).TryGetValue(out var known))
                 {
-                    reports[family.Name] = known;
+                    reports[client.Name] = known;
                     continue;
                 }
-                reparsed.Add(family.Name);
-                reports[family.Name] = ParseFamily(family, fingerprint, documents, contents);
+                reparsed.Add(client.Name);
+                reports[client.Name] = ParseFamily(client, context, fingerprint, documents, contents);
             }
             // Unchanged or failed families keep their previous documents; a fresh parse is authoritative.
             var parsed = reparsed.Where(name => reports[name].Ok).ToHashSet();
@@ -144,10 +148,11 @@ namespace SessionMemory
 
         // Documents rendered before a parse fails stay in the corpus, so they are added as they render.
         // Any failure, including one while rendering, fails the family with the "{Type}: {Message}" text the manifest persists.
-        private static FamilyReport ParseFamily(Family family, string fingerprint, Dictionary<string, DocumentMeta> documents, Dictionary<string, string> contents) =>
+        private static FamilyReport ParseFamily(ISessionClient client, ClientContext context, string fingerprint, Dictionary<string, DocumentMeta> documents,
+            Dictionary<string, string> contents) =>
             Result.Try(() =>
                 {
-                    var result = family.Parse();
+                    var result = client.Parse(context);
                     foreach (var document in result.Documents) AddDocument(document, documents, contents);
                     return result.Stats;
                 }, Attempt.Describe)

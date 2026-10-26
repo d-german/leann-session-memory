@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using CSharpFunctionalExtensions;
+using SessionMemory.Clients;
 
 namespace SessionMemory
 {
@@ -18,7 +19,8 @@ namespace SessionMemory
         private const long ArchiveAfterRecentBytes = 4_000_000;
 
         private readonly string _root;
-        private readonly ImmutableArray<Family> _families;
+        private readonly ClientContext _context;
+        private readonly ImmutableArray<ISessionClient> _clients;
         // A build task never faults: its failure is the "{ExceptionType}: {Message}" text, so Task.WhenAll waits for every build.
         private readonly Dictionary<string, Task<Result<TierState, string>>> _running = [];
         private readonly Dictionary<string, DateTime> _failedAt = [];
@@ -28,10 +30,11 @@ namespace SessionMemory
         private string? _corpusHash;
         private Process? _server;
 
-        public Watcher(string root, ImmutableArray<Family> families)
+        public Watcher(ClientContext context, ImmutableArray<ISessionClient> clients)
         {
-            _root = root;
-            _families = families;
+            _root = context.Root;
+            _context = context;
+            _clients = clients;
         }
 
         public static bool RecentDue(bool exists, string signature, string published, DateTime now, DateTime lastChange, DateTime? firstUnbuilt, bool once) =>
@@ -73,7 +76,7 @@ namespace SessionMemory
         {
             var published = Collect();
             if (!once && (published || _server is not { HasExited: false })) RestartServer();
-            var capture = Corpus.Capture(_root, _families);
+            var capture = Corpus.Capture(_context, _clients);
             _errors.Remove("capture");
             var manifest = capture.Manifest;
             var now = DateTime.UtcNow;

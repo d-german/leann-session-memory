@@ -1,6 +1,7 @@
 ﻿using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using SessionMemory.Clients;
 
 namespace SessionMemory
 {
@@ -19,6 +20,7 @@ namespace SessionMemory
                 FinderOutputChecks(request);
                 FinderWindowChecks(request);
                 FinderCurrentChecks(request);
+                FinderClientChecks(request);
             }
             finally
             {
@@ -250,6 +252,44 @@ namespace SessionMemory
                 Console.SetOut(console);
             }
             return JsonNode.Parse(output.ToString())!;
+        }
+
+        // Find scans whatever clients the request names, so a client written here replaces the real stores.
+        private static void FinderClientChecks(FindRequest request)
+        {
+            Check(request.Clients.SequenceEqual(ClientRegistry.All), "searches every registered client by default");
+            var injected = FinderRun(request with
+            {
+                Clients = [new FakeClient()]
+            });
+            var session = injected["sessions"]!.AsArray().Single()!;
+            Check(injected["matching_sessions"]!.GetValue<int>() == 1 && session["session_id"]!.GetValue<string>() == "ffffffff-0000"
+                                                                     && session["client"]!.GetValue<string>() == "fake-client"
+                                                                     && session["snippets"]![0]!["where"]!.GetValue<string>() == "fake",
+                "searches a client given in the request instead of the registered ones");
+            var none = FinderRun(request with
+            {
+                Clients = []
+            });
+            Check(none["matching_sessions"]!.GetValue<int>() == 0, "finds nothing without clients");
+        }
+
+        // A client that reads no files: it parses one fixed document and its find work notes one fixed record.
+        sealed private class FakeClient : ISessionClient
+        {
+            public string Name => "fake";
+
+            public string? SessionVariable => null;
+
+            public ImmutableArray<string> Sources(ClientContext context) => [];
+
+            public FamilyResult Parse(ClientContext context) => new([CorpusDocument("fake", "fake-session", "a fake zebra")], []);
+
+            public IEnumerable<Action<Finder.Scan>> FindWork(FindContext context) =>
+            [
+                scan => scan.Note("fake-client", "ffffffff-0000", "a zebra beside a quokka", "2026-03-05T00:00:00",
+                    () => new Finder.Snippet("", "fake", "a zebra beside a quokka", 2))
+            ];
         }
     }
 }

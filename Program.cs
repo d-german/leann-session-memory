@@ -3,6 +3,8 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CSharpFunctionalExtensions;
+using SessionMemory.Clients;
+using SessionMemory.Clients.Synthetic;
 
 namespace SessionMemory
 {
@@ -84,8 +86,8 @@ namespace SessionMemory
         {
             using var single = new Mutex(true, @"Local\LeannSessionMemoryWatcher", out var created);
             if (!created) return Fail("Another SessionMemory watcher or refresh is already running.", once ? 3 : 0);
-            Parsers.EnsureCanary(root);
-            return new Watcher(root, Parsers.All(home, root)).RunAsync(once, force).GetAwaiter().GetResult();
+            SyntheticTranscripts.EnsureCanary(root);
+            return new Watcher(new ClientContext(home, root), ClientRegistry.All).RunAsync(once, force).GetAwaiter().GetResult();
         }
 
         private static int Search(string root, List<string> arguments)
@@ -109,7 +111,7 @@ namespace SessionMemory
 
         private static int Capture(string root, string home)
         {
-            var report = Corpus.Capture(root, Parsers.All(home, root));
+            var report = Corpus.Capture(new ClientContext(home, root), ClientRegistry.All);
             var manifest = report.Manifest;
             Console.WriteLine(JsonSerializer.Serialize(new
             {

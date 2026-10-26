@@ -1,6 +1,7 @@
 ﻿using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using SessionMemory.Clients;
 
 namespace SessionMemory
 {
@@ -181,16 +182,17 @@ namespace SessionMemory
 
         private static void CorpusCaptureChecks(string root)
         {
-            var good = new Family("good", () => [], () => new FamilyResult([CorpusDocument("good", "good-session", "kept")], new Dictionary<string, long>
+            var good = new LambdaSessionClient("good", _ => [], _ => new FamilyResult([CorpusDocument("good", "good-session", "kept")], new Dictionary<string, long>
             {
                 ["sessions"] = 1
             }));
-            var broken = new Family("broken", () => [], () => throw new InvalidOperationException("boom"));
+            var broken = new LambdaSessionClient("broken", _ => [], _ => throw new InvalidOperationException("boom"));
             // The second document cannot render, so the family fails after the first one is already in the corpus.
-            var partial = new Family("partial", () => [],
-                () => new FamilyResult([CorpusDocument("partial", "partial-1", "rendered"), CorpusDocument("partial", "partial-2", null!)], []));
-            ImmutableArray<Family> families = [good, broken, partial];
-            var first = Corpus.Capture(root, families);
+            var partial = new LambdaSessionClient("partial", _ => [],
+                _ => new FamilyResult([CorpusDocument("partial", "partial-1", "rendered"), CorpusDocument("partial", "partial-2", null!)], []));
+            var context = new ClientContext(Path.Combine(root, "home"), root);
+            ImmutableArray<ISessionClient> clients = [good, broken, partial];
+            var first = Corpus.Capture(context, clients);
             var reports = first.Manifest.Families;
             Check(first.Reparsed.SequenceEqual(["good", "broken", "partial"]) && reports["good"] is { Ok: true, Error: "", Fingerprint.Length: 64 }
                                                                               && reports["good"].Stats["sessions"] == 1, "parses every family once");
@@ -199,12 +201,16 @@ namespace SessionMemory
                 "fails a family whose document cannot render");
             Check(first.Manifest.Documents.Values.Select(meta => meta.SessionId).Order(StringComparer.Ordinal).SequenceEqual(["good-session", "partial-1"]),
                 "keeps the documents rendered before a failure");
-            var second = Corpus.Capture(root, families);
+            var second = Corpus.Capture(context, clients);
             Check(second.Reparsed.SequenceEqual(["broken", "partial"]) && second.Manifest.Families["good"].Fingerprint == reports["good"].Fingerprint,
                 "re-reads failed families but not an unchanged one");
             Check(second is { Changed: false, Manifest.DocumentCount: 2 } && second.Manifest.Families["broken"].Error == "InvalidOperationException: boom",
                 "keeps the corpus while families keep failing");
-            Check(Corpus.Capture(root, []) is { Changed: false, Reparsed.IsEmpty: true, Manifest.DocumentCount: 2 }, "keeps the corpus when no family is re-read");
+            Check(Corpus.Capture(context, []) is { Changed: false, Reparsed.IsEmpty: true, Manifest.DocumentCount: 2 }, "keeps the corpus when no family is re-read");
+            var injected = Corpus.Capture(context, [.. clients, new FakeClient()]);
+            Check(injected.Reparsed.SequenceEqual(["broken", "partial", "fake"]) && injected.Manifest.Families.Keys.SequenceEqual(["good", "broken", "partial", "fake"])
+                                                                                  && injected.Manifest.Documents.Values.Any(meta => meta.SessionId == "fake-session"),
+                "captures any ISessionClient, in the order given");
         }
 
         private static Document CorpusDocument(string family, string sessionId, string text) =>

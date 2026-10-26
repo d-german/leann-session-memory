@@ -2,6 +2,11 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CSharpFunctionalExtensions;
+using SessionMemory.Clients;
+using SessionMemory.Clients.Codex;
+using SessionMemory.Clients.Copilot;
+using SessionMemory.Clients.Synthetic;
+using SessionMemory.Clients.VsCode;
 
 namespace SessionMemory
 {
@@ -156,7 +161,7 @@ namespace SessionMemory
 
         private static void FinderChecks()
         {
-            var command = Finder.CodexInput("commandExecution", "{\"command\":\"rg RabbitMQ\",\"aggregatedOutput\":\"noise only\"}");
+            var command = CodexClient.ItemInput("commandExecution", "{\"command\":\"rg RabbitMQ\",\"aggregatedOutput\":\"noise only\"}");
             Check(command.Contains("rg RabbitMQ") && !command.Contains("noise only"), "finds Codex tool inputs without their output");
             Check(Finder.LikeEscape("50%_x'y") == @"50\%\_x''y", "escapes LIKE patterns");
             var drill = new Finder.Scan(["a", "b"], "s1");
@@ -353,15 +358,16 @@ namespace SessionMemory
             Directory.CreateDirectory(Path.GetDirectoryName(source)!);
             var initial = Line("u1", "user", "What is the retry limit?") + Line("a1", "assistant", "The retry limit is 2.");
             File.WriteAllText(source, initial);
-            ImmutableArray<Family> families = [Parsers.Synthetic(root)];
-            var first = Corpus.Capture(root, families);
+            var context = new ClientContext(Path.Combine(root, "home"), root);
+            ImmutableArray<ISessionClient> clients = [ClientRegistry.Synthetic];
+            var first = Corpus.Capture(context, clients);
             File.AppendAllText(source, Line("a2", "assistant", "Correction: the current retry limit is 5 and supersedes 2."));
-            var second = Corpus.Capture(root, families);
-            var third = Corpus.Capture(root, families);
+            var second = Corpus.Capture(context, clients);
+            var third = Corpus.Capture(context, clients);
             Check(first.Changed && second.Changed && !third.Changed, "detects an appended message once");
             Check(first.Manifest.CorpusHash != second.Manifest.CorpusHash, "changes the corpus hash");
             File.WriteAllText(source, initial + "{partial");
-            var removed = Corpus.Capture(root, families);
+            var removed = Corpus.Capture(context, clients);
             var corpus = string.Concat(Directory.EnumerateFiles(Path.Combine(root, "corpus"), "*.md").Select(File.ReadAllText));
             Check(removed.Changed && !corpus.Contains("supersedes 2") && corpus.Contains("The retry limit is 2."), "drops removed messages");
             Check(removed.Manifest.Families["synthetic"].Stats["partial_trailing"] == 1, "ignores a partial trailing record");
@@ -382,10 +388,10 @@ namespace SessionMemory
             {
                 Indexer.CanaryId
             });
-            var excluded = Corpus.Capture(root, families);
+            var excluded = Corpus.Capture(context, clients);
             Check(excluded.Manifest.DocumentCount == 0 && !Directory.EnumerateFiles(Path.Combine(root, "corpus"), "*.md").Any(), "removes excluded sessions from the corpus");
             File.Delete(Corpus.ExclusionsPath(root));
-            Check(Corpus.Capture(root, families).Manifest.DocumentCount == 1, "brings an included session back");
+            Check(Corpus.Capture(context, clients).Manifest.DocumentCount == 1, "brings an included session back");
 
             var chat = Path.Combine(root, "chat.jsonl");
             File.WriteAllLines(chat,
@@ -397,7 +403,7 @@ namespace SessionMemory
                 """{"kind":2,"k":["parts"],"i":1,"v":["final"]}""",
                 """{"kind":3,"k":["title"]}"""
             ]);
-            var (state, errors) = Parsers.Replay(chat, new JsonlStats());
+            var (state, errors) = VsCodeClient.Replay(chat, new JsonlStats());
             Check(errors == 0 && state["requests"]![0]!["result"]!["ok"]!.GetValue<bool>() && state["pendingRequests"]!.AsArray().Count == 0
                   && state["parts"]!.AsArray().Select(part => part!.GetValue<string>()).SequenceEqual(["a", "final"]) && state["title"] is null,
                 "replays VS Code edit logs");
@@ -406,19 +412,19 @@ namespace SessionMemory
             using (var compressor = new ZstdSharp.Compressor())
                 File.WriteAllBytes(compressed, compressor.Wrap("{\"a\":1}\n{\"a\":2}\n"u8).ToArray());
             Check(Jsonl.Read(compressed, new JsonlStats()).Count() == 2, "reads Zstandard-compressed rollouts");
-            Check(Parsers.StripInjectedContext("<environment_context>\n  <cwd>C:\\x</cwd>\n</environment_context>") == ""
-                  && Parsers.StripInjectedContext("<recommended_plugins>a</recommended_plugins>\n<environment_context>b</environment_context>\n") == ""
-                  && Parsers.StripInjectedContext("# AGENTS.md instructions for C:\\x\n\n<INSTRUCTIONS>rules</INSTRUCTIONS>\nFix the bug") == "Fix the bug"
-                  && Parsers.StripInjectedContext("<b>bold</b> stays") == "<b>bold</b> stays"
-                  && Parsers.StripInjectedContext("<send_user_message_question_reply>yes</send_user_message_question_reply>")
+            Check(CodexClient.StripInjectedContext("<environment_context>\n  <cwd>C:\\x</cwd>\n</environment_context>") == ""
+                  && CodexClient.StripInjectedContext("<recommended_plugins>a</recommended_plugins>\n<environment_context>b</environment_context>\n") == ""
+                  && CodexClient.StripInjectedContext("# AGENTS.md instructions for C:\\x\n\n<INSTRUCTIONS>rules</INSTRUCTIONS>\nFix the bug") == "Fix the bug"
+                  && CodexClient.StripInjectedContext("<b>bold</b> stays") == "<b>bold</b> stays"
+                  && CodexClient.StripInjectedContext("<send_user_message_question_reply>yes</send_user_message_question_reply>")
                   == "<send_user_message_question_reply>yes</send_user_message_question_reply>", "strips injected Codex context only");
             var workspace = Path.Combine(root, "workspace.yaml");
             File.WriteAllText(workspace, "id: x\ncwd: C:\\x\nname: 'It''s done'\nuser_named: false\n");
-            Check(Parsers.WorkspaceName(workspace) == "It's done" && Parsers.WorkspaceName(Path.Combine(root, "missing.yaml")) == "", "reads Copilot session names");
+            Check(CopilotClient.WorkspaceName(workspace) == "It's done" && CopilotClient.WorkspaceName(Path.Combine(root, "missing.yaml")) == "", "reads Copilot session names");
 
             var fresh = Path.Combine(root, "fresh");
-            Parsers.EnsureCanary(fresh);
-            var seeded = Parsers.Synthetic(fresh).Parse().Documents.Single();
+            SyntheticTranscripts.EnsureCanary(fresh);
+            var seeded = ClientRegistry.Synthetic.Parse(new ClientContext(fresh, fresh)).Documents.Single();
             Check(seeded is { SessionId: Indexer.CanaryId, Messages.Length: 3 }, "seeds the canary on a new machine");
         }
 

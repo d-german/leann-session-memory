@@ -1,4 +1,8 @@
-﻿using System.Collections.Immutable;
+﻿using SessionMemory.Clients;
+using SessionMemory.Clients.Claude;
+using SessionMemory.Clients.Codex;
+using SessionMemory.Clients.Copilot;
+using SessionMemory.Clients.VsCode;
 
 namespace SessionMemory
 {
@@ -19,6 +23,7 @@ namespace SessionMemory
                 WorkspaceAndWalkChecks(temporary.FullName);
                 ParserContractChecks(temporary.FullName);
                 ParserFamilyChecks(temporary.FullName);
+                ClientRegistryChecks(temporary.FullName);
             }
             finally
             {
@@ -26,7 +31,7 @@ namespace SessionMemory
             }
         }
 
-        // The Replay checks pin results for malformed edit logs through Parsers.Replay(path, stats) only, so they pass before and after the
+        // The Replay checks pin results for malformed edit logs through VsCodeClient.Replay(path, stats) only, so they pass before and after the
         // Result rewrite: an operation that does not fit the state counts once in operations_failed and changes nothing.
         private static void ReplayPathChecks(string root)
         {
@@ -115,7 +120,7 @@ namespace SessionMemory
                 """{"kind":true,"k":["t"],"v":1}""",
                 """{"kind":1.0,"k":["one"],"v":1}""") + "\n" + """{"kind":1,"k":["s"],"v":""");
             var stats = new JsonlStats();
-            var (state, errors) = Parsers.Replay(silent, stats);
+            var (state, errors) = VsCodeClient.Replay(silent, stats);
             Check(errors == 0 && stats is { Malformed: 1, PartialTrailing: 1 }
                               && state.ToJsonString() == """{"a":{"b":1},"list":[1,2,3],"n":null,"s":"x","t":1,"one":1}""",
                 "skips unknown kinds and edits before the first state without failing them");
@@ -137,25 +142,23 @@ namespace SessionMemory
             var walk = Path.Combine(root, "walk");
             string[] files = ["a.jsonl", Path.Combine("x", "b.jsonl"), Path.Combine("x", "skip.txt"), Path.Combine("x", "y", "c.jsonl"), Path.Combine("z", "d.jsonl")];
             foreach (var file in files) ParserFile(Path.Combine(walk, file), "{}");
-            Check(Parsers.Rglob(walk, "*.jsonl").Select(Path.GetFileName).SequenceEqual(["a.jsonl", "b.jsonl", "d.jsonl", "c.jsonl"])
-                  && !Parsers.Rglob(Path.Combine(root, "no-walk"), "*.jsonl").Any(), "lists each directory's children before descending, like Python's rglob");
+            Check(SourceFiles.Rglob(walk, "*.jsonl").Select(Path.GetFileName).SequenceEqual(["a.jsonl", "b.jsonl", "d.jsonl", "c.jsonl"])
+                  && !SourceFiles.Rglob(Path.Combine(root, "no-walk"), "*.jsonl").Any(), "lists each directory's children before descending, like Python's rglob");
             var named = ParserFile(Path.Combine(root, "named.yaml"), "id: x", "names: no", "name: \"say \\\"hi\\\"\"");
             var unnamed = ParserFile(Path.Combine(root, "unnamed.yaml"), "id: x");
-            Check(Parsers.WorkspaceName(named) == "say \"hi\"" && Parsers.WorkspaceName(unnamed) == "" && Parsers.WorkspaceName(walk) == "",
+            Check(CopilotClient.WorkspaceName(named) == "say \"hi\"" && CopilotClient.WorkspaceName(unnamed) == "" && CopilotClient.WorkspaceName(walk) == "",
                 "reads double-quoted Copilot session names and nothing from unnamed files or folders");
         }
 
-        // The refactored surface: Family compares by value and every list a family hands out is a non-default ImmutableArray.
+        // Every list a client hands out is a non-default ImmutableArray, and an empty home parses with the stats in their persisted order.
         private static void ParserContractChecks(string root)
         {
-            var family = new Family("x", OneSource, NoDocuments);
-            Check(family == new Family("x", OneSource, NoDocuments) && family != new Family("y", OneSource, NoDocuments) && family.Sources() is ["a"],
-                "compares families by value");
             var home = Path.Combine(root, "empty-home");
             Directory.CreateDirectory(home);
-            var families = Parsers.All(home, root);
-            Check(families.Select(item => item.Name).SequenceEqual(["synthetic", "codex", "claude", "copilot", "vscode"])
-                  && families.Select(item => item.Sources().Length).SequenceEqual([0, 3, 0, 4, 0]), "lists every family and the database files it watches");
+            var context = new ClientContext(home, root);
+            var clients = ClientRegistry.All;
+            Check(clients.Select(item => item.Name).SequenceEqual(["synthetic", "codex", "claude", "copilot", "vscode"])
+                  && clients.Select(item => item.Sources(context).Length).SequenceEqual([0, 3, 0, 4, 0]), "lists every family and the database files it watches");
             string[][] statNames =
             [
                 ["files", "sessions", "malformed", "partial_trailing"],
@@ -164,45 +167,63 @@ namespace SessionMemory
                 ["event_files", "event_sessions", "store_sessions", "malformed", "partial_trailing", "desktop_sessions"],
                 ["files", "sessions", "operations_failed", "malformed", "partial_trailing"]
             ];
-            var results = families.Select(item => item.Parse()).ToList();
+            var results = clients.Select(item => item.Parse(context)).ToList();
             Check(results.All(result => result.Documents.IsEmpty) && results.Zip(statNames, (result, names) => result.Stats.Keys.SequenceEqual(names)).All(same => same),
                 "parses an empty home with stats in their persisted order");
-            Check(Parsers.ChatFiles(Path.Combine(root, "no-code")) is { IsDefault: false, IsEmpty: true }, "finds no chat files without VS Code");
-            return;
-
-            static ImmutableArray<string> OneSource() => ["a"];
-
-            static FamilyResult NoDocuments() => new([], []);
+            Check(VsCodeClient.ChatFiles(Path.Combine(root, "no-code")) is { IsDefault: false, IsEmpty: true }, "finds no chat files without VS Code");
         }
 
         private static void ParserFamilyChecks(string root)
         {
             var home = ParserHome(root);
-            var families = Parsers.All(home, root);
-            var chats = Parsers.ChatFiles(Parsers.CodeUser(home));
+            var context = new ClientContext(home, root);
+            var clients = ClientRegistry.All;
+            var chats = VsCodeClient.ChatFiles(VsCodeClient.CodeUser(home));
             Check(chats is [var profile, var workspace] && profile.EndsWith("e1.jsonl", StringComparison.Ordinal) && workspace.EndsWith("s1.jsonl", StringComparison.Ordinal),
                 "finds VS Code chat files in Python's path order");
-            var vsCode = families[4].Parse();
+            var vsCode = clients[4].Parse(context);
             Check(vsCode.Documents is [{ SessionId: "vs-1", Client: "vscode-copilot", Title: "Fix it", Messages: [{ Role: "user" }, { Role: "assistant", Text: "hi there" }] }]
                   && vsCode.Stats["files"] == 2 && vsCode.Stats["operations_failed"] == 2, "parses VS Code sessions and counts failed operations");
-            var copilot = families[3].Parse();
+            var copilot = clients[3].Parse(context);
             Check(copilot.Documents is [{ SessionId: "c1", Client: "github-copilot-cli", Title: "Named", Messages.Length: 2 }]
-                  && copilot.Stats["desktop_sessions"] == 0 && families[3].Sources().Length == 6, "reads Copilot events when data.db has no sessions table");
-            var codex = families[1].Parse();
+                  && copilot.Stats["desktop_sessions"] == 0 && clients[3].Sources(context).Length == 6, "reads Copilot events when data.db has no sessions table");
+            var codex = clients[1].Parse(context);
             Check(codex.Documents is [{ SessionId: "cx-1", Title: "Codex title", Messages: [{ Role: "user" }, { Role: "assistant" }] }]
-                  && codex.Stats["fallback_threads"] == 1 && families[1].Sources() is [_, _, var rollout, _, var state, _]
+                  && codex.Stats["fallback_threads"] == 1 && clients[1].Sources(context) is [_, _, var rollout, _, var state, _]
                   && rollout.EndsWith("rollout-1.jsonl", StringComparison.Ordinal) && state.EndsWith("state_5.sqlite", StringComparison.Ordinal),
                 "keeps index titles when the Codex state database has no threads table");
-            var claude = families[2].Parse();
+            var claude = clients[2].Parse(context);
             Check(claude.Documents is [{ SessionId: "cl-1", Client: "claude-code", Title: "Claude title", Messages.Length: 2 }] && claude.Stats["parent_files"] == 1,
                 "parses Claude sessions with their titles");
+        }
+
+        // The registry keeps the manifest's family order and the hosts' order of precedence for the current session.
+        private static void ClientRegistryChecks(string root)
+        {
+            var all = ClientRegistry.All;
+            Check(all is [LambdaSessionClient, CodexClient, ClaudeClient, CopilotClient, VsCodeClient] && all[0] == ClientRegistry.Synthetic,
+                "registers one client per family");
+            Check(all.Select(client => client.SessionVariable).SequenceEqual([null, "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID", "COPILOT_AGENT_SESSION_ID", null]),
+                "names the session variable each host sets");
+            Check(ClientRegistry.SessionHosts.Select(client => client.Name).SequenceEqual(["copilot", "codex", "claude"]) && ClientRegistry.SessionHosts.All(all.Contains)
+                  && Corpus.CurrentSessionVariables.SequenceEqual(["COPILOT_AGENT_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID"]),
+                "reads the current session in the hosts' order of precedence");
+            var context = new ClientContext(Path.Combine(root, "lambda-home"), root);
+            var find = new FindContext(context.Home, new Dictionary<string, DocumentMeta>(), false);
+            var lambda = new LambdaSessionClient("lambda", _ => ["a"], _ => new FamilyResult([], []),
+                _ => [scan => scan.Note("lambda", "lambda-session", "a zebra", "2026-01-01T00:00:00", () => null)], "LAMBDA_SESSION_ID");
+            var noted = new Finder.Scan(["zebra"]);
+            foreach (var work in lambda.FindWork(find)) work(noted);
+            Check(lambda is { Name: "lambda", SessionVariable: "LAMBDA_SESSION_ID" } && lambda.Sources(context) is ["a"] && lambda.Parse(context).Documents.IsEmpty
+                  && noted.Sessions.Keys.SequenceEqual([new Finder.SessionKey("lambda", "lambda-session")]), "builds a client from delegates");
+            Check(!ClientRegistry.Synthetic.FindWork(find).Any() && ClientRegistry.Synthetic.SessionVariable is null, "gives a delegate client no find work by default");
         }
 
         // A home with one session per client; data.db and the Codex state database are empty files without the queried tables.
         private static string ParserHome(string root)
         {
             var home = Path.Combine(root, "home");
-            var codeUser = Parsers.CodeUser(home);
+            var codeUser = VsCodeClient.CodeUser(home);
             ParserFile(Path.Combine(codeUser, "workspaceStorage", "w1", "chatSessions", "s1.jsonl"),
                 """{"kind":0,"v":{"sessionId":"vs-1","customTitle":"Fix it","requests":[]}}""",
                 """{"kind":2,"k":["requests"],"v":[{"requestId":"r1","message":{"text":"hello"},"response":[{"value":"hi there"}],"timestamp":1792588777123}]}""",
@@ -235,7 +256,7 @@ namespace SessionMemory
         {
             var path = Path.Combine(root, name + ".jsonl");
             File.WriteAllLines(path, operations);
-            var (state, errors) = Parsers.Replay(path, new JsonlStats());
+            var (state, errors) = VsCodeClient.Replay(path, new JsonlStats());
             return (errors, state.ToJsonString());
         }
 

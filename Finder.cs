@@ -7,12 +7,13 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using CSharpFunctionalExtensions;
+using SessionMemory.Clients;
 
 namespace SessionMemory
 {
     /// <summary>
     /// What to find. Only names a session ID or prefix whose excerpts are all listed; Since keeps records at or after that time;
-    /// Outputs adds Copilot CLI tool results to what is searched.
+    /// Outputs adds Copilot CLI tool results to what is searched; Clients are the clients whose stores are searched.
     /// </summary>
     sealed internal record FindRequest
     {
@@ -35,6 +36,9 @@ namespace SessionMemory
         public DateTimeOffset? Since { get; init; }
 
         public bool Outputs { get; init; }
+
+        // Every registered client unless the caller hands in others, as the self-test does.
+        public ImmutableArray<ISessionClient> Clients { get; init; } = ClientRegistry.All;
     }
 
     /// <summary>
@@ -43,9 +47,6 @@ namespace SessionMemory
     /// </summary>
     internal static partial class Finder
     {
-        private const string CopilotOutput = "tool.execution_complete";
-        private static readonly string[] CopilotTypes = ["user.message", "assistant.message", "tool.execution_start"];
-        private static readonly Regex VsCodeTimestamp = MyRegex();
         private const int WindowChars = 300;
 
         // With a session ID (or prefix), lists every matching excerpt in that session instead of one per session.
@@ -56,7 +57,7 @@ namespace SessionMemory
             var terms = request.Terms.IsDefaultOrEmpty ? [] : request.Terms;
             var manifest = Store.Load<Manifest>(Path.Combine(request.Root, "state", "manifest.json"));
             var documents = manifest?.Documents ?? [];
-            var work = WorkItems(request.Home, documents, request.Outputs);
+            var work = WorkItems(request, documents);
             // Load balancing hands files out one at a time, so a few large logs don't pile up on one core.
             var found = new Dictionary<SessionKey, Found>();
             var scans = Partitioner.Create(work, loadBalance: true).AsParallel().Select(item =>
@@ -82,30 +83,12 @@ namespace SessionMemory
             return 0;
         }
 
-        // Files are independent, so each one is a work item scanned on its own core; the Codex query goes first,
-        // since it is the longest single item.
-        private static List<Action<Scan>> WorkItems(string home, Dictionary<string, DocumentMeta> documents, bool outputs)
+        // Files are independent, so each one is a work item scanned on its own core. Every client hands out its own work, in
+        // registry order, so the Codex row ranges, the longest single items, go first.
+        private static List<Action<Scan>> WorkItems(FindRequest request, Dictionary<string, DocumentMeta> documents)
         {
-            var vsCodeSessions = documents.Values.Where(document => document.Family == "vscode")
-                .GroupBy(document => document.SourceRef, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(group => group.Key, group => group.First().SessionId, StringComparer.OrdinalIgnoreCase);
-            var work = new List<Action<Scan>>();
-            // The Codex table is one 1 GB scan; row ranges let it run in parallel like the files.
-            if (File.Exists(Parsers.CodexHistory(home)) && RowRange(Parsers.CodexHistory(home)) is var (first, last) && last >= first)
-            {
-                const int parts = 32;
-                var size = (last - first) / parts + 1;
-                for (var start = first; start <= last; start += size)
-                {
-                    var (from, to) = (start, Math.Min(last, start + size - 1));
-                    work.Add(scan => ScanCodex(scan, Parsers.CodexHistory(home), from, to));
-                }
-            }
-            work.AddRange(Parsers.Rglob(Path.Combine(home, ".claude", "projects"), "*.jsonl").Select(path => (Action<Scan>)(scan => ScanClaude(scan, path))));
-            work.AddRange(Parsers.CopilotEventFiles(home).Select(path => (Action<Scan>)(scan => ScanCopilot(scan, path, outputs))));
-            work.AddRange(Parsers.ChatFiles(Parsers.CodeUser(home)).Select(path => (Action<Scan>)(scan =>
-                ScanVsCode(scan, path, vsCodeSessions.GetValueOrDefault(path) ?? Path.GetFileNameWithoutExtension(path)))));
-            return work;
+            var context = new FindContext(request.Home, documents, request.Outputs);
+            return [.. request.Clients.SelectMany(client => client.FindWork(context))];
         }
 
         private static void WriteText(FindRequest request, ImmutableArray<string> terms, string? since, int matching,
@@ -174,22 +157,7 @@ namespace SessionMemory
             {
                 session.Best
             }.OfType<Snippet>()
-            : session.All.DistinctBy(snippet => snippet.Text).OrderByDescending(snippet => snippet.At, StringComparer.Ordinal).Take(top);
-
-        // Only what Codex was asked to do; command output stays out like other tool outputs.
-        public static string CodexInput(string itemType, string itemJson)
-        {
-            using var json = Jsonl.Parse(itemJson);
-            var item = json?.RootElement;
-            return itemType switch
-            {
-                "commandExecution" => item.Get("command").Str(),
-                "mcpToolCall" => $"{item.Get("server").Str()} {item.Get("tool").Str()} {item.Get("arguments").Str()}",
-                "fileChange" => item.Get("changes").Str(),
-                "webSearch" => item.Get("query").Str(),
-                _ => itemJson
-            };
-        }
+                : session.All.DistinctBy(snippet => snippet.Text).OrderByDescending(snippet => snippet.At, StringComparer.Ordinal).Take(top);
 
         public static string LikeEscape(string term) =>
             term.Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_").Replace("'", "''");
@@ -306,14 +274,14 @@ namespace SessionMemory
             return (score, (low + high) / 2);
         }
 
-        private static string Utc(string timestamp) =>
+        public static string Utc(string timestamp) =>
             DateTimeOffset.TryParse(timestamp, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var time)
                 ? Utc(time)
                 : "";
 
         private static string Utc(DateTimeOffset time) => time.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture);
 
-        private static IEnumerable<string> Lines(string path)
+        public static IEnumerable<string> Lines(string path)
         {
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16);
             using var reader = new StreamReader(stream);
@@ -536,137 +504,6 @@ namespace SessionMemory
         }
 
         public sealed record Snippet(string At, string Where, string Text, int Score);
-
-        private static void ScanClaude(Scan scan, string path)
-        {
-            var stem = Path.GetFileNameWithoutExtension(path);
-            var subagent = path.Split(Path.DirectorySeparatorChar).Any(part => part.Equals("subagents", StringComparison.OrdinalIgnoreCase));
-            foreach (var line in Lines(path))
-            {
-                if (!scan.Mentions(line) || line.Contains("\"tool_result\"", StringComparison.Ordinal)) continue;
-                using var json = Jsonl.Parse(line);
-                if (json is null) continue;
-                var record = (JsonElement?)json.RootElement;
-                var sessionId = record.Get("sessionId").StrOr(stem);
-                scan.Note("claude", subagent ? $"{sessionId}:subagent:{stem}" : sessionId, line, Utc(record.Get("timestamp").StrOr("")),
-                    () => ClaudeExcerpt(line, scan.Terms));
-            }
-        }
-
-        // Parses its own document, so the deferred excerpt never depends on one disposed by the scanning loop.
-        private static Snippet? ClaudeExcerpt(string line, ImmutableArray<string> terms)
-        {
-            using var json = Jsonl.Parse(line);
-            return json is null ? null : Excerpt(json.RootElement.TryGetProperty("message", out var message) ? message : json.RootElement, "", terms);
-        }
-
-        private static void ScanCopilot(Scan scan, string path, bool outputs)
-        {
-            var sessionId = Path.GetFileName(Path.GetDirectoryName(path)!);
-            var selfCalls = outputs ? new HashSet<string>(StringComparer.Ordinal) : null;
-            foreach (var line in Lines(path))
-            {
-                if (selfCalls is not null) RememberSelfCall(line, selfCalls);
-                if (scan.Mentions(line)) NoteCopilot(scan, sessionId, line, selfCalls);
-            }
-        }
-
-        // Tool results count only when selfCalls is given, which is when they are asked for.
-        private static void NoteCopilot(Scan scan, string sessionId, string line, HashSet<string>? selfCalls)
-        {
-            using var json = Jsonl.Parse(line);
-            var record = json?.RootElement;
-            var type = record.Get("type").AsString();
-            if (type == CopilotOutput && selfCalls is not null) NoteCopilotOutput(scan, sessionId, record, selfCalls);
-            else if (CopilotTypes.Contains(type))
-                scan.Note("copilot", sessionId, line, Utc(record.Get("timestamp").StrOr("")),
-                    () => record.Get("data") is { } data ? Excerpt(data, record.Get("type").Str(), scan.Terms) : null);
-        }
-
-        // Results of the memory tool's own runs repeat what it found in other sessions, so the calls that started them are remembered.
-        private static void RememberSelfCall(string line, HashSet<string> selfCalls)
-        {
-            if (!line.Contains("\"tool.execution_start\"", StringComparison.Ordinal) || !Scan.IsSelfInvocation(line)) return;
-            using var json = Jsonl.Parse(line);
-            var record = json?.RootElement;
-            if (record.Get("type").AsString() == "tool.execution_start" && record.Get("data").Get("toolCallId").AsString() is { } id) selfCalls.Add(id);
-        }
-
-        // A result is matched on its content or error alone, since its telemetry repeats the call's arguments.
-        private static void NoteCopilotOutput(Scan scan, string sessionId, JsonElement? record, HashSet<string> selfCalls)
-        {
-            var data = record.Get("data");
-            if (data.Get("toolCallId").AsString() is { } id && selfCalls.Contains(id)) return;
-            var result = data.Get("result");
-            if ((result ?? data.Get("error")) is not { } output) return;
-            var label = result is null ? "tool error" : "tool output";
-            scan.Note("copilot", sessionId, output.GetRawText(), Utc(record.Get("timestamp").StrOr("")), () => OutputExcerpt(output, label, scan.Terms));
-        }
-
-        // A result carries no tool name, and a nested "name" would relabel its path, so the label goes in front.
-        private static Snippet? OutputExcerpt(JsonElement output, string label, ImmutableArray<string> terms) =>
-            Excerpt(output, "", terms) is { } excerpt
-                ? excerpt with
-                {
-                    Where = $"{label} {excerpt.Where}".TrimEnd()
-                }
-                : null;
-
-        private static (long First, long Last) RowRange(string history)
-        {
-            using var database = new SqliteReader(history);
-            var row = database.Query("SELECT min(rowid), max(rowid) FROM thread_items").First();
-            return (Sql.IntOr(row[0], 1), Sql.IntOr(row[1], 0));
-        }
-
-        private static void ScanCodex(Scan scan, string history, long from, long to)
-        {
-            using var database = new SqliteReader(history);
-            var filter = string.Join(" OR ", scan.Terms.SelectMany(term => Scan.Forms(term)).Select(term => $"item_json LIKE '%{LikeEscape(term)}%' ESCAPE '\\'"));
-            var query = $"SELECT thread_id, item_type, created_at_ms, item_json FROM thread_items WHERE rowid BETWEEN {from} AND {to} AND item_type IN " +
-                        $"('userMessage','agentMessage','commandExecution','mcpToolCall','fileChange','webSearch') AND ({filter})";
-            foreach (var row in database.Query(query))
-            {
-                var itemType = Sql.Str(row[1]);
-                var itemJson = Sql.Str(row[3]);
-                scan.Note("codex", Sql.Str(row[0]), CodexInput(itemType, itemJson), Utc(Transcript.IsoFromMs(Sql.Number(row[2]))), () =>
-                {
-                    using var json = Jsonl.Parse(itemJson);
-                    if (json is null) return null;
-                    var item = json.RootElement;
-                    var input = itemType switch
-                    {
-                        "commandExecution" => item.TryGetProperty("command", out var command) ? command : (JsonElement?)null,
-                        "mcpToolCall" => item.TryGetProperty("arguments", out var arguments) ? arguments : null,
-                        "fileChange" => item.TryGetProperty("changes", out var changes) ? changes : null,
-                        "webSearch" => item.TryGetProperty("query", out var search) ? search : null,
-                        _ => item
-                    };
-                    var label = itemType == "mcpToolCall" ? $"{((JsonElement?)item).Get("tool").Str()}" : itemType;
-                    return input is { } element ? Excerpt(element, label, scan.Terms) : null;
-                });
-            }
-        }
-
-        private static void ScanVsCode(Scan scan, string path, string sessionId)
-        {
-            var modified = File.GetLastWriteTimeUtc(path).ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture);
-            foreach (var line in Lines(path))
-            {
-                if (!scan.Mentions(line)) continue;
-                var match = VsCodeTimestamp.Match(line);
-                scan.Note("vscode-copilot", sessionId, line,
-                    match.Success ? Utc(Transcript.IsoFromMs(double.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture))) : modified,
-                    () =>
-                    {
-                        using var json = Jsonl.Parse(line);
-                        return json is null ? null : Excerpt(json.RootElement, "", scan.Terms);
-                    });
-            }
-        }
-
-        [GeneratedRegex("\"timestamp\":(\\d{13})", RegexOptions.Compiled)]
-        private static partial Regex MyRegex();
 
         [GeneratedRegex(@"\s+")]
         private static partial Regex Whitespace();

@@ -25,7 +25,7 @@ without re-running the audits.
    Remove `try/catch` wherever the failure is an expected outcome; wrap unavoidable boundary exceptions **once** at the edge.
 2. **Immutable data**: read-only records instead of mutable classes where the type is a value object;
    `ImmutableArray<T>` instead of `IReadOnlyList<T>`/`List<T>`/`T[]` where a collection is built once and then only read.
-3. **A demo**: `exclude` and `show` should show the railway clearly (see section 8, "Demo track").
+3. **Readable rails**: `exclude` and `show` should show the railway flow clearly (see section 8, "Smallest useful subset").
 4. **Zero behavior change** unless a decision in section 3 says otherwise.
 
 Non-goals: new features, performance work, changing the on-disk formats, changing the installed tool's behavior.
@@ -316,7 +316,7 @@ Do **not** run `Install-SessionMemory.ps1` (it reinstalls LEANN and rewrites glo
 4. `Enable-ScheduledTask`, `Start-ScheduledTask`; confirm the watcher process is running and `find`/`search` work through `bin\SessionMemory.exe` and `bin\Search-SessionMemory.ps1`.
 5. Rollback = copy the backup folder over `bin\` after stopping the watcher.
 
-## 8. Work packages (dependency order) and the demo track
+## 8. Work packages (dependency order) and the smallest useful subset
 
 | WP | Title | Depends on | Effort |
 |---|---|---|---|
@@ -329,7 +329,7 @@ Do **not** run `Install-SessionMemory.ps1` (it reinstalls LEANN and rewrites glo
 | 6 | Railway, parsers: replay, optional-table probes, `WorkspaceName`, `IsoFromMs`, Json `TryParse`, `IntOr` | 0; decisions D1, D3 | M/L |
 | 7 | Optional polish: request records, tuple records, `Found` freeze, `Sqlite.Open`/`TryQuery`, `Maybe` ladders | any | S each |
 
-**Demo track (fastest path to show the functional style): WP0 + WP4.** Show `exclude abc`, `exclude <canary>`, `exclude <real id>`, `show a` and `show zzzzzzzz`;
+**Smallest useful subset (fastest path to the railway style): WP0 + WP4.** Run `exclude abc`, `exclude <canary>`, `exclude <real id>`, `show a` and `show zzzzzzzz`;
 each failure leaves the rail at a different `Ensure`/`Bind` and the remaining steps are skipped. No other WP is required.
 
 Suggested order for the full effort: 0 -> 4 -> 1 -> 2 -> 3 -> 5 -> 6 -> 7. WP5 `Indexer.Publish` rollback conversion is optional and last.

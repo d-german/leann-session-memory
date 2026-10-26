@@ -1,6 +1,7 @@
 ﻿using System.Collections.Frozen;
 using System.Collections.Immutable;
 using System.Text.Json.Nodes;
+using SessionMemory.Clients;
 
 namespace SessionMemory
 {
@@ -154,13 +155,14 @@ namespace SessionMemory
             {
                 Signature = Indexer.Signature(new Dictionary<string, string>())
             });
-            Check(new Watcher(root, []).RunAsync(true, false).GetAwaiter().GetResult() == 0, "refreshes once without rebuilding unchanged indexes");
+            Check(new Watcher(new ClientContext(Path.Combine(root, "home"), root), []).RunAsync(true, false).GetAwaiter().GetResult() == 0,
+                "refreshes once without rebuilding unchanged indexes");
             var status = Store.LoadNode(Path.Combine(root, "state", "watcher.json"));
             Check(status?["capture"]?["reparsed"] is JsonArray { Count: 0 } && status["building"] is JsonArray { Count: 0 } && status["errors"] is JsonObject { Count: 0 },
                 "writes the watcher status");
             Check(File.ReadAllText(Path.Combine(root, "logs", "watcher.log")).Contains("one-time refresh started"), "logs the refresh");
-            var broken = new Family("broken", () => throw new IOException("sources unreadable"), () => throw new InvalidOperationException("never parsed"));
-            Check(new Watcher(failing, [broken]).RunAsync(true, false).GetAwaiter().GetResult() == 1
+            var broken = new LambdaSessionClient("broken", _ => throw new IOException("sources unreadable"), _ => throw new InvalidOperationException("never parsed"));
+            Check(new Watcher(new ClientContext(Path.Combine(failing, "home"), failing), [broken]).RunAsync(true, false).GetAwaiter().GetResult() == 1
                   && File.ReadAllText(Path.Combine(failing, "logs", "watcher.log")).Contains("cycle failed: IOException: sources unreadable"),
                 "records a failed cycle as its exception type and message");
         }
