@@ -18,7 +18,7 @@ namespace SessionMemory
         // Shows the messages matching this pattern, clipped around the match, instead of the last ones.
         public string? Around { get; init; }
 
-        // Neighbouring messages shown with each match.
+        // Neighboring messages shown with each match.
         public int Context { get; init; }
 
         public int Max { get; init; } = 6;
