@@ -1,0 +1,114 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="890" viewBox="0 0 1240 890" role="img" aria-labelledby="commands-title commands-desc">
+  <title id="commands-title">SessionMemory command selection</title>
+  <desc id="commands-desc">Command arguments pass through help and root option handling to a dispatcher. The dispatcher receives all registered ICommand implementations and runs the first whose verb matches and whose argument requirement is met. Otherwise it prints usage and exits with code 2. The nine commands are shown with their behavior. Command selection is separate from processing all session clients.</desc>
+  <defs>
+    <style>
+      text { font-family: "Segoe UI", Helvetica, Arial, sans-serif; fill: #1f2328; }
+      .h1 { font-size: 22px; font-weight: 600; }
+      .sub { font-size: 14px; fill: #57606a; }
+      .bt { font-size: 15px; font-weight: 600; }
+      .bx { font-size: 13px; }
+      .code { font-family: Consolas, "Courier New", monospace; font-size: 13px; }
+      .cmd { font-family: Consolas, "Courier New", monospace; font-size: 15px; font-weight: 700; }
+      .lab { font-size: 12px; fill: #57606a; }
+      .cod { fill: #6639ba; }
+      .raw { fill: #953800; }
+      .txt { fill: #116329; }
+      .idx { fill: #0550ae; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#57606a"/></marker>
+  </defs>
+  <rect width="1240" height="890" fill="#ffffff"/>
+  <text class="h1" x="30" y="40">SessionMemory: how a command is selected</text>
+  <text class="sub" x="30" y="64">One invocation selects one command. A selected command may then process multiple session clients.</text>
+
+  <rect x="30" y="96" width="220" height="105" rx="8" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5"/>
+  <text class="bt" x="46" y="122">Program arguments</text>
+  <text class="code" x="46" y="145">CommandArguments</text>
+  <text class="bx" x="46" y="166">Verb is first; operands follow.</text>
+  <text class="bx" x="46" y="185">Flags and options are removed.</text>
+
+  <rect x="290" y="96" width="250" height="105" rx="8" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5"/>
+  <text class="bt" x="306" y="122">Program</text>
+  <text class="bx" x="306" y="145">Help anywhere: usage, exit 0.</text>
+  <text class="bx" x="306" y="166">Reads the --root option before</text>
+  <text class="bx" x="306" y="185">dispatching remaining arguments.</text>
+
+  <rect x="580" y="96" width="300" height="105" rx="8" fill="#faf5ff" stroke="#8250df" stroke-width="1.5"/>
+  <text class="bt cod" x="596" y="122">CommandDispatcher</text>
+  <text class="bx" x="596" y="145">First matching Verb with operands</text>
+  <text class="bx" x="596" y="166">when RequiresArguments is true.</text>
+  <text class="bx" x="596" y="185">Calls that command's Execute.</text>
+
+  <rect x="920" y="96" width="290" height="105" rx="8" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5"/>
+  <text class="bt" x="936" y="122">CommandLine.ShowUsage(2)</text>
+  <text class="bx" x="936" y="145">Missing or unknown verb, or no</text>
+  <text class="bx" x="936" y="166">operand for a command that needs one.</text>
+  <text class="bx" x="936" y="185">Usage goes to stderr; exit 2.</text>
+  <path d="M250,148 H288 M540,148 H578 M880,148 H918" fill="none" stroke="#57606a" stroke-width="2" marker-end="url(#arrow)"/>
+  <text class="lab" x="900" y="137" text-anchor="middle">else</text>
+
+  <rect x="30" y="230" width="410" height="80" rx="8" fill="#faf5ff" stroke="#8250df" stroke-width="1.5"/>
+  <text class="bt cod" x="46" y="256">CommandRegistration.AddCommands</text>
+  <text class="code" x="46" y="279">IEnumerable&lt;ICommand&gt;</text>
+  <text class="bx" x="46" y="298">Dependency injection supplies all nine implementations.</text>
+  <path d="M440,270 H730 V203" fill="none" stroke="#57606a" stroke-width="2" marker-end="url(#arrow)"/>
+  <text class="lab" x="566" y="260">injected into dispatcher</text>
+
+  <text class="bt" x="30" y="351">Selected ICommand implementation</text>
+  <text class="sub" x="30" y="372">Each command reads its own options, calls its services, and returns an exit code.</text>
+  <path d="M730,201 V330 H1200 V790 M730,330 H20 V790 M1200,385 H425 V790" fill="none" stroke="#8c959f" stroke-width="2"/>
+  <text class="lab" x="748" y="320">execute the first match</text>
+
+  <rect x="60" y="395" width="350" height="120" rx="8" fill="#faf5ff" stroke="#8250df" stroke-width="1.5"/>
+  <text class="cmd cod" x="76" y="420">run</text><text class="code" x="155" y="420">RunCommand</text>
+  <text class="bx" x="76" y="445">Runs the watcher: capture and index builds.</text>
+  <text class="bx" x="76" y="466">--once runs one refresh; --force makes builds due.</text>
+  <text class="bx" x="76" y="487">The watcher normally repeats.</text>
+
+  <rect x="445" y="395" width="350" height="120" rx="8" fill="#f0f7ff" stroke="#0969da" stroke-width="1.5"/>
+  <text class="cmd idx" x="461" y="420">search</text><text class="code" x="550" y="420">SearchCommand</text>
+  <text class="bx" x="461" y="445">Searches recent and archive LEANN indexes</text>
+  <text class="bx" x="461" y="466">for ranked passages matching a query.</text>
+
+  <rect x="830" y="395" width="350" height="120" rx="8" fill="#fff8f2" stroke="#bc4c00" stroke-width="1.5"/>
+  <text class="cmd raw" x="846" y="420">find</text><text class="code" x="920" y="420">FindCommand</text>
+  <text class="bx" x="846" y="445">Searches native client stores for terms,</text>
+  <text class="bx" x="846" y="466">including tool inputs; --outputs includes</text>
+  <text class="bx" x="846" y="487">Copilot CLI tool results.</text>
+
+  <rect x="60" y="535" width="350" height="120" rx="8" fill="#f0fff4" stroke="#1a7f37" stroke-width="1.5"/>
+  <text class="cmd txt" x="76" y="560">show</text><text class="code" x="155" y="560">ShowCommand</text>
+  <text class="bx" x="76" y="585">Resolves one session in the manifest, then</text>
+  <text class="bx" x="76" y="606">reads messages from its corpus transcript.</text>
+
+  <rect x="445" y="535" width="350" height="120" rx="8" fill="#f0fff4" stroke="#1a7f37" stroke-width="1.5"/>
+  <text class="cmd txt" x="461" y="560">exclude</text><text class="code" x="550" y="560">ExcludeCommand</text>
+  <text class="bx" x="461" y="585">Excludes a session and its subagents.</text>
+  <text class="bx" x="461" y="606">Search hides them now; a later index rebuild</text>
+  <text class="bx" x="461" y="627">removes them from the indexes.</text>
+
+  <rect x="830" y="535" width="350" height="120" rx="8" fill="#f0fff4" stroke="#1a7f37" stroke-width="1.5"/>
+  <text class="cmd txt" x="846" y="560">include</text><text class="code" x="935" y="560">IncludeCommand</text>
+  <text class="bx" x="846" y="585">Removes a saved exclusion; the watcher</text>
+  <text class="bx" x="846" y="606">indexes the session again later.</text>
+
+  <rect x="60" y="675" width="350" height="120" rx="8" fill="#faf5ff" stroke="#8250df" stroke-width="1.5"/>
+  <text class="cmd cod" x="76" y="700">capture</text><text class="code" x="170" y="700">CaptureCommand</text>
+  <text class="bx" x="76" y="725">Updates the Markdown corpus once and</text>
+  <text class="bx" x="76" y="746">prints a JSON report. It does not build indexes.</text>
+
+  <rect x="445" y="675" width="350" height="120" rx="8" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5"/>
+  <text class="cmd" x="461" y="700">status</text><text class="code" x="550" y="700">StatusCommand</text>
+  <text class="bx" x="461" y="725">Prints watcher, manifest, index and</text>
+  <text class="bx" x="461" y="746">exclusion status as JSON.</text>
+
+  <rect x="830" y="675" width="350" height="120" rx="8" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5"/>
+  <text class="cmd" x="846" y="700">self-test</text><text class="code" x="960" y="700">SelfTestCommand</text>
+  <text class="bx" x="846" y="725">Runs built-in checks in temporary folders.</text>
+  <text class="bx" x="846" y="746">Prints JSON when all checks pass.</text>
+
+  <path d="M20,455 H58 M20,595 H58 M20,735 H58 M425,455 H443 M425,595 H443 M425,735 H443 M1200,455 H1182 M1200,595 H1182 M1200,735 H1182" fill="none" stroke="#57606a" stroke-width="2" marker-end="url(#arrow)"/>
+  <text class="sub" x="30" y="840">Command selection runs one matching verb. Capture and find can then work across registered session clients.</text>
+  <text class="sub" x="30" y="862">Command-specific validation can also report errors and exit 2.</text>
+</svg>

@@ -1,0 +1,99 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1060" viewBox="0 0 1240 1060" role="img" aria-labelledby="life-title life-desc">
+  <title id="life-title">Capture and index update lifecycle</title>
+  <desc id="life-desc">The watcher captures changed client families, retains previous documents for unchanged or failed families, applies exclusions and writes the corpus and manifest. Capture alone ends there. The watcher chooses recent or archive builds, stages corpus copies and rebuilds with local Contriever and LEANN. It validates the candidate, publishes it with rollback for a failed swap, validates the published index, records tier state, and restarts the resident search server. Failures are recorded and retried, with a backoff for builds.</desc>
+  <defs>
+    <style>
+      text { font-family: "Segoe UI", Helvetica, Arial, sans-serif; fill: #1f2328; }
+      .h1 { font-size: 22px; font-weight: 600; }
+      .sub { font-size: 14px; fill: #57606a; }
+      .ph { font-size: 16px; font-weight: 600; }
+      .bt { font-size: 15px; font-weight: 600; }
+      .bx { font-size: 13px; }
+      .code { font-family: Consolas, "Courier New", monospace; font-size: 12px; }
+      .lab { font-size: 12px; fill: #57606a; }
+      .cod { fill: #6639ba; }
+      .txt { fill: #116329; }
+      .idx { fill: #0550ae; }
+    </style>
+    <marker id="life-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#57606a"/></marker>
+  </defs>
+  <rect width="1240" height="1060" fill="#ffffff"/>
+  <text class="h1" x="30" y="40">Capture and index update lifecycle</text>
+  <text class="sub" x="30" y="64">The watcher runs a cycle about once a minute and can wake earlier when a build finishes.</text>
+
+  <rect x="30" y="92" width="1180" height="230" rx="10" fill="#faf5ff" stroke="#8250df" stroke-width="1.5"/>
+  <text class="ph cod" x="48" y="118">1. Capture</text>
+  <rect x="48" y="140" width="240" height="112" rx="6" fill="#ffffff" stroke="#b392f0"/>
+  <text class="bt" x="62" y="165">Check client families</text>
+  <text class="bx" x="62" y="188">Fingerprint sources and exclusions.</text>
+  <text class="bx" x="62" y="208">Reparse changed or failed families.</text>
+  <rect x="326" y="140" width="260" height="112" rx="6" fill="#ffffff" stroke="#b392f0"/>
+  <text class="bt" x="340" y="165">Keep available documents</text>
+  <text class="bx" x="340" y="188">Keep prior documents for unchanged</text>
+  <text class="bx" x="340" y="208">or failed families, then apply exclusions.</text>
+  <rect x="624" y="140" width="260" height="112" rx="6" fill="#ffffff" stroke="#7fcf96"/>
+  <text class="bt" x="638" y="165">Write corpus and manifest</text>
+  <text class="bx" x="638" y="188">Update normalized transcripts, remove</text>
+  <text class="bx" x="638" y="208">stale files, and save manifest if needed.</text>
+  <rect x="922" y="140" width="270" height="112" rx="6" fill="#f6f8fa" stroke="#8c959f"/>
+  <text class="bt" x="936" y="165">capture command ends here</text>
+  <text class="bx" x="936" y="188">The run watcher continues to the</text>
+  <text class="bx" x="936" y="208">index decision below.</text>
+  <path d="M288,196 H324 M586,196 H622 M884,196 H920" stroke="#57606a" stroke-width="2" fill="none" marker-end="url(#life-arrow)"/>
+  <text class="lab" x="48" y="290">A failed family is retried on a later capture; documents already rendered during a failed parse can also be kept.</text>
+
+  <path d="M754,322 V348" stroke="#57606a" stroke-width="2" fill="none" marker-end="url(#life-arrow)"/>
+  <rect x="30" y="350" width="1180" height="248" rx="10" fill="#f0f7ff" stroke="#0969da" stroke-width="1.5"/>
+  <text class="ph idx" x="48" y="376">2. Decide which tier needs a build</text>
+  <rect x="48" y="398" width="520" height="132" rx="6" fill="#ffffff" stroke="#80b8ef"/>
+  <text class="bt" x="62" y="423">Recent: session-memory-recent</text>
+  <text class="bx" x="62" y="447">Documents changed since the archive, plus the canary.</text>
+  <text class="bx" x="62" y="468">A changed set normally waits 90 seconds of quiet,</text>
+  <text class="bx" x="62" y="489">with a five-minute maximum wait. A missing index is due.</text>
+  <text class="bx" x="62" y="510">Requires an archive and normally at most 4,000,000 recent bytes.</text>
+  <rect x="606" y="398" width="586" height="132" rx="6" fill="#ffffff" stroke="#80b8ef"/>
+  <text class="bt" x="620" y="423">Archive: session-memory</text>
+  <text class="bx" x="620" y="447">All current corpus documents. Build if missing or empty,</text>
+  <text class="bx" x="620" y="468">when recent documents exceed 4,000,000 bytes, or to purge</text>
+  <text class="bx" x="620" y="489">exclusions after 90 seconds of quiet. Force can request either tier.</text>
+  <text class="bx" x="620" y="510">A tier already building cannot start another build.</text>
+  <text class="lab" x="48" y="572">Failed builds normally wait 15 minutes before retry. Force bypasses the backoff; one-shot runs bypass the recent debounce.</text>
+
+  <path d="M620,598 V624" stroke="#57606a" stroke-width="2" fill="none" marker-end="url(#life-arrow)"/>
+  <rect x="30" y="626" width="1180" height="218" rx="10" fill="#f0f7ff" stroke="#0969da" stroke-width="1.5"/>
+  <text class="ph idx" x="48" y="652">3. Build and publish each due tier</text>
+  <rect x="48" y="674" width="230" height="104" rx="6" fill="#ffffff" stroke="#80b8ef"/>
+  <text class="bt" x="62" y="699">Stage and rebuild</text>
+  <text class="bx" x="62" y="722">Copy corpus files for the build.</text>
+  <text class="bx" x="62" y="742">Local Contriever and LEANN</text>
+  <text class="bx" x="62" y="762">rebuild the staged index.</text>
+  <rect x="316" y="674" width="245" height="104" rx="6" fill="#ffffff" stroke="#80b8ef"/>
+  <text class="bt" x="330" y="699">Validate candidate</text>
+  <text class="bx" x="330" y="722">Search for the canary.</text>
+  <text class="bx" x="330" y="742">A failed check stops publication.</text>
+  <rect x="599" y="674" width="275" height="104" rx="6" fill="#ffffff" stroke="#80b8ef"/>
+  <text class="bt" x="613" y="699">Publish</text>
+  <text class="bx" x="613" y="722">Move the candidate into place.</text>
+  <text class="bx" x="613" y="742">A failed swap attempts to restore</text>
+  <text class="bx" x="613" y="762">the previous index.</text>
+  <rect x="912" y="674" width="280" height="104" rx="6" fill="#ffffff" stroke="#80b8ef"/>
+  <text class="bt" x="926" y="699">Validate published index</text>
+  <text class="bx" x="926" y="722">Search for the canary again.</text>
+  <text class="bx" x="926" y="742">Only a successful check returns</text>
+  <text class="bx" x="926" y="762">tier state for the watcher to save.</text>
+  <path d="M278,726 H314 M561,726 H597 M874,726 H910" stroke="#57606a" stroke-width="2" fill="none" marker-end="url(#life-arrow)"/>
+  <text class="lab" x="48" y="818">A published validation failure is recorded for retry; the previous index is not restored at that point.</text>
+
+  <path d="M1052,844 V870" stroke="#57606a" stroke-width="2" fill="none" marker-end="url(#life-arrow)"/>
+  <rect x="30" y="872" width="1180" height="146" rx="10" fill="#faf5ff" stroke="#8250df" stroke-width="1.5"/>
+  <text class="ph cod" x="48" y="898">4. Collect the result and continue</text>
+  <rect x="48" y="916" width="530" height="76" rx="6" fill="#ffffff" stroke="#b392f0"/>
+  <text class="bt" x="62" y="941">Save state and restart search server</text>
+  <text class="bx" x="62" y="964">After a successful build, the watcher saves tier state and restarts</text>
+  <text class="bx" x="62" y="983">the resident server in a continuous run so it loads the new index.</text>
+  <rect x="616" y="916" width="576" height="76" rx="6" fill="#ffffff" stroke="#b392f0"/>
+  <text class="bt" x="630" y="941">Wait for the next cycle or a build result</text>
+  <text class="bx" x="630" y="964">Errors are recorded. Capture and eligible builds are retried in later cycles;</text>
+  <text class="bx" x="630" y="983">the watcher also restarts a stopped server during continuous runs.</text>
+  <path d="M578,954 H614" stroke="#57606a" stroke-width="2" fill="none" marker-end="url(#life-arrow)"/>
+</svg>

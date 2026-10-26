@@ -1,0 +1,75 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="790" viewBox="0 0 1240 790" role="img" aria-labelledby="client-title client-desc">
+  <title id="client-title">Session clients and their consumers</title>
+  <desc id="client-desc">ClientRegistration registers a collection of ISessionClient implementations. Four concrete clients read native assistant stores; a delegate-based LambdaSessionClient captures synthetic canary data. Corpus, Finder and CurrentSession receive the collection and use the interface. CurrentSession checks environment variables in registration order.</desc>
+  <defs>
+    <style>
+      text { font-family: "Segoe UI", Helvetica, Arial, sans-serif; fill: #1f2328; }
+      .h1 { font-size: 22px; font-weight: 600; }
+      .sub { font-size: 14px; fill: #57606a; }
+      .head { font-size: 16px; font-weight: 600; }
+      .body { font-size: 14px; }
+      .small { font-size: 13px; fill: #57606a; }
+      .code { font-family: Consolas, "Courier New", monospace; font-size: 14px; }
+      .purple { fill: #6639ba; }
+      .green { fill: #116329; }
+      .orange { fill: #953800; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#57606a"/></marker>
+  </defs>
+  <rect width="1240" height="790" fill="#ffffff"/>
+  <text class="h1" x="30" y="40">Session clients: one collection, several consumers</text>
+  <text class="sub" x="30" y="65">Each consumer receives all registered clients and calls the same interface.</text>
+
+  <rect x="30" y="98" width="340" height="440" rx="10" fill="#fff8f2" stroke="#bc4c00" stroke-width="1.5"/>
+  <text class="head orange" x="48" y="126">Registered implementations</text>
+  <text class="small" x="48" y="148">Clients/ClientRegistration.cs</text>
+  <rect x="46" y="166" width="308" height="52" rx="6" fill="#ffffff" stroke="#e8a87c"/>
+  <text class="code" x="60" y="198">CodexClient</text>
+  <rect x="46" y="230" width="308" height="52" rx="6" fill="#ffffff" stroke="#e8a87c"/>
+  <text class="code" x="60" y="262">ClaudeClient</text>
+  <rect x="46" y="294" width="308" height="62" rx="6" fill="#ffffff" stroke="#e8a87c"/>
+  <text class="code" x="60" y="320">CopilotClient</text>
+  <text class="small" x="60" y="341">CLI and desktop</text>
+  <rect x="46" y="368" width="308" height="52" rx="6" fill="#ffffff" stroke="#e8a87c"/>
+  <text class="code" x="60" y="400">VsCodeClient</text>
+  <rect x="46" y="432" width="308" height="90" rx="6" fill="#faf5ff" stroke="#b392f0"/>
+  <text class="code" x="60" y="457">LambdaSessionClient</text>
+  <text class="small" x="60" y="478">SyntheticTranscripts.Files / Parse</text>
+  <text class="small" x="60" y="499">No find work or session variable</text>
+
+  <rect x="455" y="190" width="305" height="248" rx="10" fill="#faf5ff" stroke="#8250df" stroke-width="1.5"/>
+  <text class="head purple" x="475" y="220">ISessionClient</text>
+  <text class="small" x="475" y="243">Shared contract</text>
+  <path d="M475,258 L740,258" stroke="#d8c6f5"/>
+  <text class="code" x="475" y="283">Name</text>
+  <text class="code" x="475" y="311">SessionVariable</text>
+  <text class="code" x="475" y="339">Sources(context)</text>
+  <text class="code" x="475" y="367">Parse(context)</text>
+  <text class="code" x="475" y="395">FindWork(context)</text>
+
+  <rect x="848" y="98" width="362" height="440" rx="10" fill="#f0fff4" stroke="#1a7f37" stroke-width="1.5"/>
+  <text class="head green" x="866" y="126">Consumers</text>
+  <text class="code" x="866" y="151">IEnumerable&lt;ISessionClient&gt;</text>
+  <rect x="864" y="176" width="330" height="82" rx="6" fill="#ffffff" stroke="#7fcf96"/>
+  <text class="head" x="880" y="201">Corpus</text>
+  <text class="body" x="880" y="226">Enumerates clients to capture sessions.</text>
+  <rect x="864" y="278" width="330" height="82" rx="6" fill="#ffffff" stroke="#7fcf96"/>
+  <text class="head" x="880" y="303">Finder</text>
+  <text class="body" x="880" y="328">Collects each client's find work.</text>
+  <rect x="864" y="380" width="330" height="136" rx="6" fill="#ffffff" stroke="#7fcf96"/>
+  <text class="head" x="880" y="405">CurrentSession</text>
+  <text class="body" x="880" y="430">Checks environment variables in</text>
+  <text class="body" x="880" y="451">registration order; the first usable</text>
+  <text class="body" x="880" y="472">current session ID wins.</text>
+
+  <path d="M370,314 L453,314" stroke="#57606a" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <text class="small" x="412" y="301" text-anchor="middle">implements</text>
+  <path d="M760,314 L846,314" stroke="#57606a" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <text class="small" x="803" y="301" text-anchor="middle">injected</text>
+
+  <rect x="30" y="590" width="1180" height="145" rx="10" fill="#f6f8fa" stroke="#8c959f"/>
+  <text class="head" x="50" y="620">How the collection works</text>
+  <text class="body" x="50" y="648">Registration supplies each implementation as an ISessionClient. Consumers work with the collection through the contract.</text>
+  <text class="body" x="50" y="674">The synthetic client supplies capture delegates; its empty FindWork means Finder does not scan the canary.</text>
+  <text class="body" x="50" y="700">CurrentSession selects a usable session ID; it does not select one client for every command.</text>
+</svg>

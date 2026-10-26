@@ -1,0 +1,197 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="930" viewBox="0 0 1240 930" role="img" aria-labelledby="overview-title overview-desc">
+  <title id="overview-title">SessionMemory overview: where session history goes and who reads it</title>
+  <desc id="overview-desc">Four assistant stores hold raw history; generated canary data is a separate capture input. The watcher's capture step parses these inputs through the session clients into a Markdown transcript corpus and manifest, using exclusions maintained by ExclusionService. The indexer copies the transcripts into a recent and an archive LEANN index built with a local embedding model, and a resident search server keeps both indexes loaded. At the bottom, find scans only native assistant stores, show reads one transcript found through the manifest, and search queries the indexes through the search server.</desc>
+  <defs>
+    <style>
+      text { font-family: "Segoe UI", Helvetica, Arial, sans-serif; fill: #1f2328; }
+      .h1 { font-size: 22px; font-weight: 600; }
+      .sub { font-size: 14px; fill: #57606a; }
+      .ph { font-size: 16px; font-weight: 600; }
+      .bt { font-size: 15px; font-weight: 600; }
+      .bx { font-size: 13px; }
+      .code { font-family: Consolas, "Courier New", monospace; font-size: 12px; }
+      .cmd { font-family: Consolas, "Courier New", monospace; font-size: 14px; font-weight: 700; }
+      .lab { font-size: 12.5px; fill: #57606a; }
+      .raw { fill: #953800; }
+      .txt { fill: #116329; }
+      .idx { fill: #0550ae; }
+      .cod { fill: #6639ba; }
+      .mut { fill: #57606a; }
+    </style>
+    <marker id="ov-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#57606a"/></marker>
+    <marker id="ov-raw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#bc4c00"/></marker>
+    <marker id="ov-txt" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1a7f37"/></marker>
+    <marker id="ov-idx" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#0969da"/></marker>
+  </defs>
+
+  <rect x="0" y="0" width="1240" height="930" fill="#ffffff"/>
+
+  <text class="h1" x="30" y="40">SessionMemory: where session history goes and who reads it</text>
+  <text class="sub" x="30" y="64">Everything runs on this machine. &lt;root&gt; is %LOCALAPPDATA%\LeannSessionMemory and ~ is your user folder.</text>
+  <text class="sub" x="30" y="84">Only find sees tool inputs and outputs. show and search see the conversation text that capture keeps.</text>
+
+  <!-- Panel A: raw assistant stores -->
+  <rect x="30" y="96" width="340" height="560" rx="10" fill="#fff8f2" stroke="#bc4c00" stroke-width="1.5"/>
+  <text class="ph raw" x="46" y="122">Capture inputs</text>
+  <text class="bx mut" x="46" y="142">four native stores and a generated canary</text>
+
+  <rect x="44" y="158" width="312" height="80" rx="6" fill="#ffffff" stroke="#e8a87c"/>
+  <text class="bt" x="58" y="182">Codex</text>
+  <text class="code" x="58" y="204">~\.codex\thread_history_1.sqlite</text>
+  <text class="bx" x="58" y="224">plus JSONL rollouts and title files</text>
+
+  <rect x="44" y="252" width="312" height="80" rx="6" fill="#ffffff" stroke="#e8a87c"/>
+  <text class="bt" x="58" y="276">Claude Code</text>
+  <text class="code" x="58" y="298">~\.claude\projects\**\*.jsonl</text>
+  <text class="bx" x="58" y="318">one file per session and per subagent</text>
+
+  <rect x="44" y="346" width="312" height="80" rx="6" fill="#ffffff" stroke="#e8a87c"/>
+  <text class="bt" x="58" y="370">GitHub Copilot CLI and desktop</text>
+  <text class="code" x="58" y="392">~\.copilot\session-state\*\events.jsonl</text>
+  <text class="bx" x="58" y="412">plus session-store.db and data.db</text>
+
+  <rect x="44" y="440" width="312" height="80" rx="6" fill="#ffffff" stroke="#e8a87c"/>
+  <text class="bt" x="58" y="464">VS Code Copilot Chat</text>
+  <text class="code" x="58" y="486">%APPDATA%\Code\User\...\chatSessions</text>
+  <text class="bx" x="58" y="506">one edit log per chat</text>
+
+  <rect x="44" y="534" width="312" height="80" rx="6" fill="#faf5ff" stroke="#b392f0"/>
+  <text class="bt" x="58" y="558">Generated canary (capture only)</text>
+  <text class="code" x="58" y="580">&lt;root&gt;\synthetic\canary.jsonl</text>
+  <text class="bx" x="58" y="600">known chat used to validate builds</text>
+
+  <!-- Panel B: capture -->
+  <rect x="410" y="96" width="230" height="560" rx="10" fill="#faf5ff" stroke="#8250df" stroke-width="1.5"/>
+  <text class="ph cod" x="426" y="122">Capture</text>
+  <text class="bx mut" x="426" y="142">SessionMemory code</text>
+
+  <rect x="422" y="158" width="206" height="116" rx="6" fill="#ffffff" stroke="#b392f0"/>
+  <text class="bt" x="436" y="182">Watcher (run)</text>
+  <text class="bx" x="436" y="204">started by a scheduled task;</text>
+  <text class="bx" x="436" y="223">one cycle a minute:</text>
+  <text class="bx" x="436" y="242">capture, then index builds</text>
+
+  <rect x="422" y="306" width="206" height="150" rx="6" fill="#ffffff" stroke="#b392f0"/>
+  <text class="bt" x="436" y="330">Corpus.Capture</text>
+  <text class="bx" x="436" y="352">re-parses each client</text>
+  <text class="bx" x="436" y="371">whose files changed,</text>
+  <text class="code" x="436" y="390">through ISessionClient</text>
+  <text class="bx" x="436" y="409">keeps user and assistant</text>
+  <text class="bx" x="436" y="428">text, titles, timestamps</text>
+
+  <rect x="422" y="480" width="206" height="86" rx="6" fill="#f6f8fa" stroke="#8c959f"/>
+  <text class="bx" x="436" y="504">Capture leaves out</text>
+  <text class="bx" x="436" y="523">tool calls, tool results</text>
+  <text class="bx" x="436" y="542">and injected context.</text>
+
+  <!-- Panel C: conversation text -->
+  <rect x="680" y="96" width="250" height="560" rx="10" fill="#f0fff4" stroke="#1a7f37" stroke-width="1.5"/>
+  <text class="ph txt" x="696" y="122">Conversation text</text>
+  <text class="bx mut" x="696" y="142">normalized, one file per session</text>
+
+  <rect x="694" y="158" width="222" height="120" rx="6" fill="#ffffff" stroke="#7fcf96"/>
+  <text class="bt" x="708" y="182">Transcript corpus</text>
+  <text class="code" x="708" y="204">&lt;root&gt;\corpus\*.md</text>
+  <text class="bx" x="708" y="224">one .md file per session;</text>
+  <text class="bx" x="708" y="243">each passage repeats the</text>
+  <text class="bx" x="708" y="262">session ID and title</text>
+
+  <rect x="694" y="294" width="222" height="120" rx="6" fill="#ffffff" stroke="#7fcf96"/>
+  <text class="bt" x="708" y="318">Manifest</text>
+  <text class="code" x="708" y="340">&lt;root&gt;\state\manifest.json</text>
+  <text class="bx" x="708" y="360">client, session ID, title,</text>
+  <text class="bx" x="708" y="379">last activity and hash of</text>
+  <text class="bx" x="708" y="398">each transcript; client status</text>
+
+  <rect x="694" y="430" width="222" height="104" rx="6" fill="#ffffff" stroke="#7fcf96"/>
+  <text class="bt" x="708" y="454">Exclusions</text>
+  <text class="code" x="708" y="476">&lt;root&gt;\state\excluded.json</text>
+  <text class="bx" x="708" y="496">hidden from search and find;</text>
+  <text class="bx" x="708" y="515">maintained by ExclusionService</text>
+
+  <!-- Panel D: semantic index -->
+  <rect x="970" y="96" width="240" height="560" rx="10" fill="#f0f7ff" stroke="#0969da" stroke-width="1.5"/>
+  <text class="ph idx" x="986" y="122">Semantic index</text>
+  <text class="bx mut" x="986" y="142">LEANN .NET, on this machine</text>
+
+  <rect x="984" y="158" width="212" height="62" rx="6" fill="#ffffff" stroke="#80b8ef"/>
+  <text class="bt" x="998" y="182">Embedding model</text>
+  <text class="code" x="998" y="204">facebook/contriever ONNX</text>
+
+  <rect x="984" y="246" width="212" height="104" rx="6" fill="#ffffff" stroke="#b392f0"/>
+  <text class="bt" x="998" y="270">Indexer build</text>
+  <text class="bx" x="998" y="292">stages transcripts,</text>
+  <text class="bx" x="998" y="311">rebuilds with LEANN .NET,</text>
+  <text class="bx" x="998" y="330">validates, then publishes</text>
+
+  <rect x="984" y="376" width="212" height="136" rx="6" fill="#ffffff" stroke="#80b8ef"/>
+  <text class="bt" x="998" y="400">Two indexes</text>
+  <text class="code" x="998" y="422">session-memory-recent</text>
+  <text class="bx" x="998" y="441">sessions changed since</text>
+  <text class="bx" x="998" y="460">the last archive build</text>
+  <text class="code" x="998" y="482">session-memory</text>
+  <text class="bx" x="998" y="501">every transcript</text>
+
+  <rect x="984" y="538" width="212" height="100" rx="6" fill="#ffffff" stroke="#80b8ef"/>
+  <text class="bt" x="998" y="562">Search server</text>
+  <text class="code" x="998" y="584">leann-dotnet --serve</text>
+  <text class="bx" x="998" y="604">keeps both indexes loaded;</text>
+  <text class="bx" x="998" y="623">restarted after a publish</text>
+
+  <!-- Capture and build flow -->
+  <path d="M370,381 L420,381" stroke="#57606a" stroke-width="2" fill="none" marker-end="url(#ov-gray)"/>
+  <text class="lab" x="390" y="371" text-anchor="middle">parse</text>
+  <path d="M525,274 L525,304" stroke="#57606a" stroke-width="2" fill="none" marker-end="url(#ov-gray)"/>
+  <path d="M628,381 L678,381" stroke="#57606a" stroke-width="2" fill="none" marker-end="url(#ov-gray)"/>
+  <text class="lab" x="660" y="371" text-anchor="middle">write</text>
+  <path d="M930,298 L982,298" stroke="#57606a" stroke-width="2" fill="none" marker-end="url(#ov-gray)"/>
+  <text class="lab" x="950" y="288" text-anchor="middle">copy</text>
+  <path d="M1090,220 L1090,244" stroke="#57606a" stroke-width="2" fill="none" marker-end="url(#ov-gray)"/>
+  <path d="M1090,350 L1090,374" stroke="#57606a" stroke-width="2" fill="none" marker-end="url(#ov-gray)"/>
+  <path d="M1090,512 L1090,536" stroke="#57606a" stroke-width="2" fill="none" marker-end="url(#ov-gray)"/>
+
+  <!-- Commands that read -->
+  <rect x="30" y="716" width="340" height="122" rx="8" fill="#fff8f2" stroke="#bc4c00" stroke-width="1.5"/>
+  <text class="cmd raw" x="46" y="742">find &lt;terms&gt;</text>
+  <text class="bx" x="46" y="764">Finder runs clients' FindWork over</text>
+  <text class="bx" x="46" y="783">native stores in parallel.</text>
+  <text class="bx" x="46" y="802">Whole words, tool inputs included;</text>
+  <text class="bx" x="46" y="821">Copilot CLI tool results with --outputs.</text>
+  <path d="M200,716 L200,660" stroke="#bc4c00" stroke-width="2.5" fill="none" marker-end="url(#ov-raw)"/>
+  <text class="lab" x="212" y="694">native stores only</text>
+
+  <rect x="410" y="716" width="230" height="122" rx="8" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5"/>
+  <text class="bt" x="426" y="742">Other commands</text>
+  <text class="bx" x="426" y="764">run: the watcher loop</text>
+  <text class="bx" x="426" y="783">capture: one capture now</text>
+  <text class="bx" x="426" y="802">exclude, include, status,</text>
+  <text class="bx" x="426" y="821">self-test: see commands.svg</text>
+
+  <rect x="680" y="716" width="250" height="122" rx="8" fill="#f0fff4" stroke="#1a7f37" stroke-width="1.5"/>
+  <text class="cmd txt" x="696" y="742">show &lt;id&gt; | --current</text>
+  <text class="bx" x="696" y="764">SessionReader resolves the</text>
+  <text class="bx" x="696" y="783">ID in the manifest, then</text>
+  <text class="bx" x="696" y="802">prints the last or matching</text>
+  <text class="bx" x="696" y="821">messages of that transcript</text>
+  <path d="M805,716 L805,660" stroke="#1a7f37" stroke-width="2.5" fill="none" marker-end="url(#ov-txt)"/>
+  <text class="lab" x="817" y="694">reads one transcript</text>
+
+  <rect x="970" y="716" width="240" height="122" rx="8" fill="#f0f7ff" stroke="#0969da" stroke-width="1.5"/>
+  <text class="cmd idx" x="986" y="742">search &lt;question&gt;</text>
+  <text class="bx" x="986" y="764">Indexer.Search asks the</text>
+  <text class="bx" x="986" y="783">server for both indexes</text>
+  <text class="bx" x="986" y="802">(or one LEANN process);</text>
+  <text class="bx" x="986" y="821">drops excluded sessions</text>
+  <path d="M1090,716 L1090,642" stroke="#0969da" stroke-width="2.5" fill="none" marker-end="url(#ov-idx)"/>
+  <text class="lab" x="1080" y="694" text-anchor="end">query</text>
+
+  <!-- Legend -->
+  <rect x="30" y="864" width="16" height="16" rx="3" fill="#fff8f2" stroke="#bc4c00" stroke-width="1.5"/>
+  <text class="bx" x="54" y="877">Native raw history and generated canary capture input</text>
+  <rect x="640" y="864" width="16" height="16" rx="3" fill="#f0fff4" stroke="#1a7f37" stroke-width="1.5"/>
+  <text class="bx" x="664" y="877">Conversation text kept by capture (show reads it)</text>
+  <rect x="30" y="892" width="16" height="16" rx="3" fill="#f0f7ff" stroke="#0969da" stroke-width="1.5"/>
+  <text class="bx" x="54" y="905">Semantic index of that text (search reads it)</text>
+  <rect x="640" y="892" width="16" height="16" rx="3" fill="#faf5ff" stroke="#8250df" stroke-width="1.5"/>
+  <text class="bx" x="664" y="905">SessionMemory code; gray arrows are capture and index builds</text>
+</svg>

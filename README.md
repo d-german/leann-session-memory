@@ -36,7 +36,8 @@ section from the instruction files, keeping any other edits; the index is kept.
 
 ## Use
 
-Assistants run these on their own; you can too.
+Assistants run these commands on their own; you can too. Every command accepts `--root <path>` to use a data folder
+other than `%LOCALAPPDATA%\LeannSessionMemory`, and `--help` prints the usage.
 
 ```powershell
 $memory = "$env:LOCALAPPDATA\LeannSessionMemory\bin\SessionMemory.exe"
@@ -45,12 +46,45 @@ $memory = "$env:LOCALAPPDATA\LeannSessionMemory\bin\SessionMemory.exe"
 & $memory find RAM --partial                                   # substring matching, e.g. also "param"
 & $memory find RabbitMQ threat --session <session id>          # every match inside one session
 & $memory find appsettings --current --since 2026-10-26T09:00  # every match in this session since a time
+& $memory find NullReferenceException --current --outputs      # also search this session's Copilot CLI tool results
 & $memory show <session id> --last 15                          # a session's latest messages
 & $memory show <session id> --around "T15|T22"                 # messages matching a pattern
 & $memory show --current --around "dotnet test"                # the same, in the session running the command
-& $memory exclude <session id>                                 # drop a session from the indexes
+& $memory exclude <session id>                                 # drop a session from searches and indexes
+& $memory include <session id>                                 # undo an exclusion
 & $memory status
 ```
+
+### Commands
+
+| Command | What it does |
+| --- | --- |
+| `search <question>` | Searches the recent and archive indexes by meaning and prints the best passages, grouped by session. |
+| `find <term> [<term> ...]` | Scans the assistants' own stores for sessions that contain every term and lists them newest first, with an excerpt. |
+| `show <session-id>`, `show --current` | Prints one session from the transcript corpus: its last messages, or the ones that match a pattern. |
+| `exclude <session-id>` | Hides a session and its Claude subagents from `search` and `find` at once; the watcher then removes it from both indexes. |
+| `include <session-id>` | Removes an exclusion; the session becomes searchable again when the watcher rebuilds the applicable index. |
+| `capture` | Updates the transcript corpus and manifest once and prints a JSON summary. It does not build an index. |
+| `run` | The background watcher that the scheduled task starts. `run --once` does one refresh and exits. |
+| `status` | Prints the watcher, manifest and index states and the exclusion list as JSON. |
+| `self-test` | Runs the built-in checks in temporary folders and prints `{"ok": true}` when they all pass. |
+
+Options:
+
+- `search`: `--top-k <n>` (default 8, at most 50), `--json`, `--include-current`, `--current`.
+- `find`: `--top <n>` (default 8, at most 50), `--session <id>` (every matching excerpt in that session), `--partial`
+  (match inside words), `--since <time>` (ISO 8601; a time without an offset is UTC), `--outputs` (also Copilot CLI
+  tool results), `--json`, `--include-current`, `--current`.
+- `show`: `--last <n>` (default 10), `--around <regex>` (case-insensitive), `--context <n>` (neighboring messages
+  around each match, default 0), `--max <n>` (matches shown, default 6) and `--chars <n>` (characters per message,
+  default 1200). An ID prefix works when it names one session: an exact ID wins, then the only session that isn't a
+  subagent.
+- `exclude`, `include`: a full session ID or a prefix of at least 8 characters. The canary session can't be excluded.
+- `run`: `--once` returns 0, or 1 when the refresh recorded an error. `--force` starts the index builds without waiting
+  for the 90-second quiet period or the 15-minute pause after a failed build. Only one watcher or refresh runs at a
+  time; a second one stops at once, and a `--once` refresh then exits with 3.
+
+Errors go to standard error. A usage error exits with 2.
 
 `search` and `find` print compact text grouped by session; add `--json` for machine-readable output.
 
@@ -61,6 +95,18 @@ only for exact names, IDs, numbers, paths or error text.
 `Search-SessionMemory.ps1`, the wrapper the instructions point assistants to, takes `-TopK`, `-Current`,
 `-IncludeCurrent` and `-Json` for the matching `search` options.
 
+### What search, show and find read
+
+| Command | Reads | Sees |
+| --- | --- | --- |
+| `search` | the recent and archive LEANN indexes, built from the transcripts | passages of user and assistant messages with the session title, ranked by meaning |
+| `show` | the manifest, to resolve the ID, then that session's transcript in `corpus\` | the same messages, in order |
+| `find` | each assistant's own store: the Codex history database, Claude Code JSONL files, Copilot CLI `events.jsonl` files and VS Code chat logs | messages and tool inputs such as commands, file edits and web searches; Copilot CLI tool results with `--outputs` |
+
+Transcripts leave out tool calls, tool results and the context the assistants inject, so `search` and `show` can't
+find an exact command, path or error message that appeared only there. `find` can, because it reads the raw records.
+It still skips Claude Code tool results and Codex command output, and it doesn't scan the synthetic canary.
+
 ### Recall the current session
 
 `search` and `find` leave out the session running them, so a conversation doesn't find its own questions;
@@ -70,22 +116,101 @@ only for exact names, IDs, numbers, paths or error text.
 (GitHub Copilot CLI).
 
 After a context compaction, an assistant can use these to recover the exact commands, decisions, errors and file paths
-from earlier in its own conversation instead of guessing, re-reading files or asking again. The running session is
-detected from `COPILOT_AGENT_SESSION_ID` for GitHub Copilot CLI; other clients are detected when they expose a
-session ID.
+from earlier in its own conversation instead of guessing, re-reading files or asking again. The running session comes
+from the variable its host sets for the commands it runs: `CODEX_THREAD_ID` (Codex 0.95 and later),
+`CLAUDE_CODE_SESSION_ID` (Claude Code 2.1.132 and later) or `COPILOT_AGENT_SESSION_ID` (GitHub Copilot CLI), checked in
+that order. VS Code sets none. When no variable is set, searches leave nothing out and `--current` fails with a message.
 
 ## How it works
 
-- Every minute the watcher re-reads the clients whose files changed and writes one Markdown transcript per session:
-  user and assistant messages, the session title and timestamps. Tool outputs and injected system context are left out.
-- Changed sessions go into a small "recent" LEANN index that rebuilds in seconds once a session has been quiet for
-  90 seconds. The full archive rebuilds after about 4 MB of changes. One query ranks both.
-- A resident `leann-dotnet --serve` process keeps searches at about a second.
-- `find` scans the raw logs in parallel, including tool inputs that never reach the transcripts, and Copilot CLI tool
-  results with `--outputs`. A term matches only as a whole word (`RAM` doesn't match `param`) unless `--partial` is
-  given, and records that run the memory tools themselves are skipped, so a session's own searches don't rank it first.
-- Each assistant is one `ISessionClient` implementation, registered with Microsoft.Extensions.DependencyInjection; each
-  command is one `ICommand` class under `Commands\`. See [docs/client-strategy.md](docs/client-strategy.md).
+![Overview: assistant stores, capture, the transcript corpus and indexes, and what search, show and find read](docs/diagrams/overview.svg)
+
+[overview.svg](docs/diagrams/overview.svg) follows session history from the assistants' stores through capture into the
+transcript corpus, manifest and indexes, and shows which data `search`, `show` and `find` read.
+
+### Capture
+
+`capture`, and each watcher cycle, asks every registered client for the files it watches. A client whose files (path,
+size and time), exclusion list and program build are unchanged keeps its previous transcripts; the others are parsed
+again. Each parsed session becomes one Markdown transcript in `corpus\` with its user and assistant messages, title and
+timestamps. A client that fails to parse keeps its earlier transcripts, and the error is recorded in the manifest.
+Excluded sessions are removed, changed transcripts are rewritten and transcripts of sessions that are gone are deleted.
+`capture` stops there.
+
+### Watcher and index builds
+
+![Capture and index update lifecycle](docs/diagrams/lifecycle.svg)
+
+[lifecycle.svg](docs/diagrams/lifecycle.svg) shows one watcher cycle: capture, the choice between recent and archive
+builds, staging, canary validation, publishing and the search server restart.
+
+`run` captures once a minute and again whenever a build finishes, then decides which index to rebuild:
+
+- The recent index, `session-memory-recent`, holds the sessions whose transcript differs from the last archive build,
+  plus the canary. Once an archive exists, it is rebuilt after nothing has changed for 90 seconds, or 5 minutes after
+  the first unbuilt change, as long as those transcripts total no more than 4 MB.
+- The archive index, `session-memory`, holds every transcript. It is rebuilt when it is missing, when the changed
+  transcripts pass 4 MB, or once exclusions made after its last build began have been quiet for 90 seconds.
+
+A build copies the transcripts into a staging folder, rebuilds the index there with LEANN .NET and the local
+`facebook/contriever` model, and searches the candidate for the canary conversation. It then swaps the candidate into
+place, restoring the old index if the swap fails, and searches the published index for the canary again. The staging
+folder is deleted however the build ends. A failed build is logged; the continuous watcher retries after 15 minutes,
+while `run --once` reports the failure and exits. A failed published-index check does not restore the previous index.
+
+After a successful published-index check, the watcher saves the index state. In continuous mode it also restarts the
+resident `leann-dotnet --serve` process, which keeps both indexes loaded so a search takes about a second. When the
+server isn't running, `search` starts LEANN .NET itself, which is slower, and says so.
+
+One `search` query ranks both indexes together. It drops passages from excluded sessions, drops an archive passage
+when the recent index holds the newer copy of that session, and shows at most three passages per session.
+
+`find` scans the raw stores in parallel. A term matches only as a whole word (`RAM` doesn't match `param`) unless
+`--partial` is given, and records in which a session runs the memory tools itself are skipped, so a session's own
+searches don't rank it first.
+
+## Architecture
+
+`Program.Main` is the composition root. It handles `--help` and `--root`, builds a
+Microsoft.Extensions.DependencyInjection `ServiceCollection` from three registration methods, and passes the
+arguments to `CommandDispatcher`:
+
+- `AddSessionClients` (`Clients\ClientRegistration.cs`) registers five clients, in this order: a `LambdaSessionClient`
+  built from the synthetic transcript functions in `SyntheticTranscripts`, then `CodexClient`,
+  `ClaudeClient`, `CopilotClient` and `VsCodeClient`.
+- `AddSessionMemory` (`ServiceRegistration.cs`) registers the services: `Corpus`, `Finder`, `Indexer`, `SearchServer`,
+  `SessionReader`, `StatusReport`, `ExclusionService`, `CurrentSession`, `LeannInstallation` and, for each run,
+  `Watcher`.
+- `AddCommands` (`Commands\CommandRegistration.cs`) registers the nine `ICommand` classes and the dispatcher.
+
+### Three services use the client collection
+
+![Session clients: ISessionClient, its registered implementations and the services that use the whole collection](docs/diagrams/clients.svg)
+
+[clients.svg](docs/diagrams/clients.svg) shows `ISessionClient`, its five registered implementations and the three
+services that receive the whole collection.
+
+`Corpus`, `Finder` and `CurrentSession` receive all registered clients as `IEnumerable<ISessionClient>`. Capture checks
+each client's `Sources` and parses changed families; `find` collects each client's `FindWork`. Current-session detection
+checks the registered `SessionVariable` values in order and uses the first usable ID. These services do not select one
+client parser for every command. The synthetic client has no find work and no session variable, so it only feeds
+capture. To add an assistant, implement `ISessionClient` and register it;
+[docs/client-strategy.md](docs/client-strategy.md) describes the contract.
+
+### Each run executes one command
+
+![Command selection: CommandDispatcher runs one ICommand per process](docs/diagrams/commands.svg)
+
+[commands.svg](docs/diagrams/commands.svg) shows how the arguments reach `CommandDispatcher` and what each of the nine
+commands does.
+
+`CommandDispatcher` receives all nine commands and runs the first one whose `Verb` matches the first argument, provided
+the argument that verb requires is there. Anything else prints the usage and exits with 2. The dispatcher selects
+exactly one `ICommand` per invocation. This command selection differs from processing the registered client collection.
+
+A command parses its options, calls the services and turns the result into output and an exit code. Rules such as the
+exclusion checks live in the services, and expected failures travel as CSharpFunctionalExtensions `Result` values until
+the command reports them.
 
 ## Privacy
 
