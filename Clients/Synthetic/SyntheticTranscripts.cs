@@ -6,7 +6,7 @@ namespace SessionMemory.Clients.Synthetic
 {
     /// <summary>
     /// The synthetic proof conversations under the tool's root, including the canary every index build must find. These are plain
-    /// functions: ClientRegistry turns them into a client with LambdaSessionClient instead of a class of their own.
+    /// functions: ClientRegistration turns them into a client with LambdaSessionClient instead of a class of their own.
     /// </summary>
     internal static class SyntheticTranscripts
     {

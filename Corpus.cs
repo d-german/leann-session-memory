@@ -84,21 +84,27 @@ namespace SessionMemory
     }
 
     /// <summary>Turns transcripts into the Markdown corpus LEANN indexes, rewriting only documents that changed.</summary>
-    internal static class Corpus
+    sealed internal class Corpus
     {
         private const int ManifestVersion = 3;
-        private const int MinimumSessionIdLength = 8;
-        // The variables agent hosts set to tell the commands they run which session runs them, in the registry's order of precedence.
-        // Each value is the session ID this tool indexes. Hosts that set none of them exclude nothing.
-        public static readonly ImmutableArray<string> CurrentSessionVariables =
-            [.. ClientRegistry.SessionHosts.Select(client => client.SessionVariable).OfType<string>()];
         private static readonly UTF8Encoding NoBom = new(false);
 
-        // Each client is a family of the manifest; the clients are read in order, so the manifest lists their families in that order.
-        public static CaptureReport Capture(ClientContext context, ImmutableArray<ISessionClient> clients)
+        private readonly ClientContext _context;
+        private readonly ImmutableArray<ISessionClient> _clients;
+        private readonly ExclusionService _exclusions;
+
+        public Corpus(ClientContext context, IEnumerable<ISessionClient> clients, ExclusionService exclusions)
+        {
+            _context = context;
+            _clients = [.. clients];
+            _exclusions = exclusions;
+        }
+
+        // Each client is a family of the manifest; the clients are read in registration order, so the manifest lists their families in that order.
+        public CaptureReport Capture()
         {
             var stopwatch = Stopwatch.StartNew();
-            var root = context.Root;
+            var root = _context.Root;
             var corpus = Path.Combine(root, "corpus");
             var manifestPath = Path.Combine(root, "state", "manifest.json");
             var previous = Store.Load<Manifest>(manifestPath) ?? new Manifest();
@@ -106,17 +112,17 @@ namespace SessionMemory
             var contents = new Dictionary<string, string>();
             var reports = new Dictionary<string, FamilyReport>();
             var reparsed = new List<string>();
-            ImmutableArray<string> exclusions = [.. LoadExclusions(root)];
-            foreach (var client in clients)
+            ImmutableArray<string> exclusions = [.. _exclusions.Load()];
+            foreach (var client in _clients)
             {
-                var fingerprint = Fingerprint(client.Sources(context), exclusions);
+                var fingerprint = Fingerprint(client.Sources(_context), exclusions);
                 if (Unchanged(previous, client.Name, fingerprint).TryGetValue(out var known))
                 {
                     reports[client.Name] = known;
                     continue;
                 }
                 reparsed.Add(client.Name);
-                reports[client.Name] = ParseFamily(client, context, fingerprint, documents, contents);
+                reports[client.Name] = ParseFamily(client, _context, fingerprint, documents, contents);
             }
             // Unchanged or failed families keep their previous documents; a fresh parse is authoritative.
             var parsed = reparsed.Where(name => reports[name].Ok).ToHashSet();
@@ -201,7 +207,7 @@ namespace SessionMemory
 
         private static void RemoveExcluded(ImmutableArray<string> exclusions, Dictionary<string, DocumentMeta> documents, Dictionary<string, string> contents)
         {
-            foreach (var name in documents.Where(pair => IsExcluded(pair.Value.SessionId, exclusions)).Select(pair => pair.Key).ToList())
+            foreach (var name in documents.Where(pair => ExclusionService.IsExcluded(pair.Value.SessionId, exclusions)).Select(pair => pair.Key).ToList())
             {
                 documents.Remove(name);
                 contents.Remove(name);
@@ -227,30 +233,6 @@ namespace SessionMemory
             foreach (var stale in Directory.EnumerateFiles(corpus, "*.md").Where(path => !documents.ContainsKey(Path.GetFileName(path))).ToList())
                 File.Delete(stale);
         }
-
-        public static string ExclusionsPath(string root) => Path.Combine(root, "state", "excluded.json");
-
-        public static List<string> LoadExclusions(string root) => Store.Load<List<string>>(ExclusionsPath(root)) ?? [];
-
-        // The ID is matched by prefix, so a value too short to be safe counts as no session.
-        public static string? CurrentSession() =>
-            CurrentSessionVariables
-                .Select(name => Environment.GetEnvironmentVariable(name)?.Trim())
-                .FirstOrDefault(value => value is { Length: >= MinimumSessionIdLength });
-
-        // The session running a search only echoes the question, so searches leave it out unless asked not to.
-        // The ID is matched like any exclusion, so a short value must not drop unrelated sessions.
-        public static ImmutableArray<string> SearchExclusions(string root, bool includeCurrent, string? currentSession = null)
-        {
-            var exclusions = LoadExclusions(root);
-            currentSession ??= CurrentSession();
-            if (!includeCurrent && currentSession?.Trim() is { Length: >= MinimumSessionIdLength } id) exclusions.Add(id);
-            return [.. exclusions];
-        }
-
-        // A prefix also covers Claude subagent sessions, whose IDs start with the parent's.
-        public static bool IsExcluded(string sessionId, ImmutableArray<string> exclusions) =>
-            exclusions.Any(prefix => sessionId.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
 
         private static string Fingerprint(ImmutableArray<string> files, ImmutableArray<string> exclusions)
         {

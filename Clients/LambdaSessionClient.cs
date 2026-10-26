@@ -3,7 +3,7 @@
 namespace SessionMemory.Clients
 {
     /// <summary>
-    /// An ISessionClient whose behavioris supplied as delegates instead of a dedicated class; used for the synthetic client.
+    /// An ISessionClient whose behavior is supplied as delegates instead of a dedicated class; used for the synthetic client.
     /// </summary>
     sealed internal class LambdaSessionClient : ISessionClient
     {

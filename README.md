@@ -84,7 +84,8 @@ session ID.
 - `find` scans the raw logs in parallel, including tool inputs that never reach the transcripts, and Copilot CLI tool
   results with `--outputs`. A term matches only as a whole word (`RAM` doesn't match `param`) unless `--partial` is
   given, and records that run the memory tools themselves are skipped, so a session's own searches don't rank it first.
-- Each assistant is one `ISessionClient` implementation; see [docs/client-strategy.md](docs/client-strategy.md).
+- Each assistant is one `ISessionClient` implementation, registered with Microsoft.Extensions.DependencyInjection; each
+  command is one `ICommand` class under `Commands\`. See [docs/client-strategy.md](docs/client-strategy.md).
 
 ## Privacy
 

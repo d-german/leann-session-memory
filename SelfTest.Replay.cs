@@ -1,4 +1,6 @@
-﻿using SessionMemory.Clients;
+﻿using System.Collections.Immutable;
+using Microsoft.Extensions.DependencyInjection;
+using SessionMemory.Clients;
 using SessionMemory.Clients.Claude;
 using SessionMemory.Clients.Codex;
 using SessionMemory.Clients.Copilot;
@@ -15,20 +17,14 @@ namespace SessionMemory
         private static void ParserRefactorChecks()
         {
             var temporary = Directory.CreateTempSubdirectory("session-memory-parsers-");
-            try
-            {
-                ReplayPathChecks(temporary.FullName);
-                ReplayPushChecks(temporary.FullName);
-                ReplaySilentChecks(temporary.FullName);
-                WorkspaceAndWalkChecks(temporary.FullName);
-                ParserContractChecks(temporary.FullName);
-                ParserFamilyChecks(temporary.FullName);
-                ClientRegistryChecks(temporary.FullName);
-            }
-            finally
-            {
-                temporary.Delete(recursive: true);
-            }
+            using var cleanup = new TemporaryDirectory(temporary.FullName);
+            ReplayPathChecks(temporary.FullName);
+            ReplayPushChecks(temporary.FullName);
+            ReplaySilentChecks(temporary.FullName);
+            WorkspaceAndWalkChecks(temporary.FullName);
+            ParserContractChecks(temporary.FullName);
+            ParserFamilyChecks(temporary.FullName);
+            ClientRegistrationChecks(temporary.FullName);
         }
 
         // The Replay checks pin results for malformed edit logs through VsCodeClient.Replay(path, stats) only, so they pass before and after the
@@ -156,7 +152,7 @@ namespace SessionMemory
             var home = Path.Combine(root, "empty-home");
             Directory.CreateDirectory(home);
             var context = new ClientContext(home, root);
-            var clients = ClientRegistry.All;
+            var clients = RegisteredClients();
             Check(clients.Select(item => item.Name).SequenceEqual(["synthetic", "codex", "claude", "copilot", "vscode"])
                   && clients.Select(item => item.Sources(context).Length).SequenceEqual([0, 3, 0, 4, 0]), "lists every family and the database files it watches");
             string[][] statNames =
@@ -177,7 +173,7 @@ namespace SessionMemory
         {
             var home = ParserHome(root);
             var context = new ClientContext(home, root);
-            var clients = ClientRegistry.All;
+            var clients = RegisteredClients();
             var chats = VsCodeClient.ChatFiles(VsCodeClient.CodeUser(home));
             Check(chats is [var profile, var workspace] && profile.EndsWith("e1.jsonl", StringComparison.Ordinal) && workspace.EndsWith("s1.jsonl", StringComparison.Ordinal),
                 "finds VS Code chat files in Python's path order");
@@ -197,17 +193,17 @@ namespace SessionMemory
                 "parses Claude sessions with their titles");
         }
 
-        // The registry keeps the manifest's family order and the hosts' order of precedence for the current session.
-        private static void ClientRegistryChecks(string root)
+        // The registration keeps the manifest's family order, which is also the order the hosts' session variables are read in.
+        private static void ClientRegistrationChecks(string root)
         {
-            var all = ClientRegistry.All;
-            Check(all is [LambdaSessionClient, CodexClient, ClaudeClient, CopilotClient, VsCodeClient] && all[0] == ClientRegistry.Synthetic,
-                "registers one client per family");
+            using var services = Services(Path.Combine(root, "registered-home"), root);
+            ImmutableArray<ISessionClient> all = [.. services.GetServices<ISessionClient>()];
+            Check(all is [LambdaSessionClient { Name: "synthetic" }, CodexClient, ClaudeClient, CopilotClient, VsCodeClient]
+                  && all.SequenceEqual(services.GetServices<ISessionClient>()), "registers one client per family, once");
             Check(all.Select(client => client.SessionVariable).SequenceEqual([null, "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID", "COPILOT_AGENT_SESSION_ID", null]),
                 "names the session variable each host sets");
-            Check(ClientRegistry.SessionHosts.Select(client => client.Name).SequenceEqual(["copilot", "codex", "claude"]) && ClientRegistry.SessionHosts.All(all.Contains)
-                  && Corpus.CurrentSessionVariables.SequenceEqual(["COPILOT_AGENT_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID"]),
-                "reads the current session in the hosts' order of precedence");
+            Check(services.GetRequiredService<CurrentSession>().Variables.SequenceEqual(["CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID", "COPILOT_AGENT_SESSION_ID"]),
+                "reads the current session in the clients' registration order");
             var context = new ClientContext(Path.Combine(root, "lambda-home"), root);
             var find = new FindContext(context.Home, new Dictionary<string, DocumentMeta>(), false);
             var lambda = new LambdaSessionClient("lambda", _ => ["a"], _ => new FamilyResult([], []),
@@ -216,7 +212,7 @@ namespace SessionMemory
             foreach (var work in lambda.FindWork(find)) work(noted);
             Check(lambda is { Name: "lambda", SessionVariable: "LAMBDA_SESSION_ID" } && lambda.Sources(context) is ["a"] && lambda.Parse(context).Documents.IsEmpty
                   && noted.Sessions.Keys.SequenceEqual([new Finder.SessionKey("lambda", "lambda-session")]), "builds a client from delegates");
-            Check(!ClientRegistry.Synthetic.FindWork(find).Any() && ClientRegistry.Synthetic.SessionVariable is null, "gives a delegate client no find work by default");
+            Check(!all[0].FindWork(find).Any() && all[0].SessionVariable is null, "gives a delegate client no find work by default");
         }
 
         // A home with one session per client; data.db and the Codex state database are empty files without the queried tables.

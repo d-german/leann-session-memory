@@ -26,9 +26,9 @@ find scanner both derive subagent session IDs (`<id>:subagent:<file stem>`), one
 | Client implementations | `CodexClient`, `ClaudeClient`, `CopilotClient`, `VsCodeClient`, one folder each under `Clients\` |
 | Delegate-based implementation | `LambdaSessionClient`, used for the synthetic client (`Clients\Synthetic\SyntheticTranscripts.cs`) |
 | Inputs | `ClientContext` (home and root folders), `FindContext` (home folder, manifest documents, `--outputs`) |
-| Registry | `ClientRegistry.All` and `ClientRegistry.SessionHosts` |
-| Consumers | `Corpus.Capture`, `Watcher`, `Finder.Run` (through `FindRequest.Clients`), `Corpus.CurrentSession` |
-| Wiring | `Program.Run` and `Program.Capture` create the `ClientContext` and pass `ClientRegistry.All` |
+| Registration | `ClientRegistration.AddSessionClients()` (`Clients\ClientRegistration.cs`), the only code that names the implementations |
+| Consumers | `Corpus`, `Finder` and `CurrentSession`, which receive `IEnumerable<ISessionClient>` through their constructors |
+| Wiring | `Program.Main` builds the `ServiceCollection` (`AddSessionClients`, `AddSessionMemory`, `AddCommands`) and runs the command |
 
 ```csharp
 internal interface ISessionClient
@@ -45,7 +45,7 @@ Each client class is partial and owns all of its client's code:
 
 ```text
 Clients\
-  ISessionClient.cs  ClientContext.cs  FindContext.cs  LambdaSessionClient.cs  ClientRegistry.cs
+  ISessionClient.cs  ClientContext.cs  FindContext.cs  LambdaSessionClient.cs  ClientRegistration.cs
   Codex\     CodexClient.cs (locations)  CodexClient.Parse.cs  CodexClient.Find.cs
   Claude\    ClaudeClient.cs             ClaudeClient.Parse.cs ClaudeClient.Find.cs
   Copilot\   CopilotClient.cs            CopilotClient.Parse.cs CopilotClient.Find.cs
@@ -57,11 +57,11 @@ Finder.cs          the find engine: Scan, Found, Excerpt, Utc, Lines
 ```
 
 The contract lives in `SessionMemory.Clients`; each implementation lives in `SessionMemory.Clients.<Client>`. Only
-`ClientRegistry` and the self-test import the per-client namespaces; `Corpus`, `Finder` and `Watcher` import only
+`ClientRegistration` and the self-test import the per-client namespaces; `Corpus`, `Finder` and `CurrentSession` import only
 `SessionMemory.Clients`.
 
-The clients keep no state. Everything comes from the context argument, so one instance of each serves the whole process
-and a test can point any client at a temporary home folder.
+The clients keep no state. Everything comes from the context argument, so each is registered as a singleton and a test can
+point any client at a temporary home folder.
 
 ```mermaid
 classDiagram
@@ -73,31 +73,30 @@ classDiagram
         +Parse(ClientContext) FamilyResult
         +FindWork(FindContext) IEnumerable
     }
-    class ClientRegistry {
+    class ClientRegistration {
         <<static>>
-        +All ImmutableArray
-        +SessionHosts ImmutableArray
-        +Synthetic ISessionClient
+        +AddSessionClients(IServiceCollection) IServiceCollection
     }
     ISessionClient <|.. CodexClient
     ISessionClient <|.. ClaudeClient
     ISessionClient <|.. CopilotClient
     ISessionClient <|.. VsCodeClient
     ISessionClient <|.. LambdaSessionClient
-    ClientRegistry o-- ISessionClient
-    Corpus ..> ISessionClient : Capture, CurrentSession
-    Watcher ..> ISessionClient : capture cycle
-    Finder ..> ISessionClient : Run via FindRequest.Clients
-    Program ..> ClientRegistry : passes All
+    ClientRegistration ..> ISessionClient : registers
+    Corpus ..> ISessionClient : Capture
+    Finder ..> ISessionClient : Run
+    CurrentSession ..> ISessionClient : SessionVariable
+    Program ..> ClientRegistration : AddSessionClients
     CodexClient ..> Finder : notes matches in Finder.Scan
 ```
 
 ## Invariants
 
-- `ClientRegistry.All` is ordered synthetic, codex, claude, copilot, vscode. That is the key order of the manifest's
-  `families` object and the order find hands out work, which puts the Codex row ranges, the longest items, first.
-- `ClientRegistry.SessionHosts` is ordered copilot, codex, claude. `Corpus.CurrentSessionVariables` is derived from it,
-  and the first variable that holds a usable ID wins.
+- `IEnumerable<ISessionClient>` resolves in registration order: synthetic, codex, claude, copilot, vscode. That is the key
+  order of the manifest's `families` object and the order find hands out work, which puts the Codex row ranges, the
+  longest items, first.
+- `CurrentSession` reads the clients' `SessionVariable` values in the same order (codex, claude, copilot); the first variable
+  that holds a usable ID wins. Only one is normally set, because each host sets its own.
 - Every document a client's `Parse` returns has `Family == Name`. `Corpus.Capture` keeps a family's previous documents
   when its parse fails, and it matches them by that field.
 - `FindWork` may be lazy; `Finder.Run` materializes all work items before the parallel scan starts.
@@ -114,11 +113,11 @@ classDiagram
    - `FindWork`: one work item per file or row range, largest first; return an empty sequence if raw search is not
      supported.
 2. Put parsing and scanning in `<Client>Client.Parse.cs` and `<Client>Client.Find.cs` as private static members.
-3. Append one instance to `ClientRegistry.All`. Appending keeps the existing manifest order. If the host sets a session
-   variable, also list the client in `ClientRegistry.SessionHosts` at the precedence it should have.
-4. Add a fixture to `SelfTest.Replay.cs` (`ParserHome`) and extend the registry checks.
+3. Add one line to `ClientRegistration.AddSessionClients()`: `.AddSingleton<ISessionClient, <Client>Client>()`. Adding it
+   last keeps the existing manifest order. A `SessionVariable` is picked up by `CurrentSession` automatically.
+4. Add a fixture to `SelfTest.Replay.cs` (`ParserHome`) and extend the registration checks.
 
-`Corpus`, `Finder`, `Watcher` and `Program` do not change.
+`Corpus`, `Finder`, `CurrentSession`, the commands and `Program` do not change.
 
 ## Class-based and delegate-based clients
 
@@ -146,9 +145,10 @@ builds that map from `FindContext.Documents`, so the client neither loads the ma
 
 ### Testing through the interface
 
-`FindRequest.Clients` defaults to `ClientRegistry.All`, and `Corpus.Capture` and `Watcher` take the clients as an
-argument. `SelfTest.Finder.cs` defines a `FakeClient` that reads no files and passes it to both `Finder.Run` and
-`Corpus.Capture`.
+`Corpus` and `Finder` receive the clients through their constructors, so a test registers other clients instead of
+calling `AddSessionClients()`. `SelfTest.Finder.cs` defines a `FakeClient` that reads no files and builds a service
+provider with only that client, then checks that find returns its session and that find returns nothing when no client
+is registered.
 
 ## When this structure is not worth it
 

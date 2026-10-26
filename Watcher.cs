@@ -1,8 +1,8 @@
-﻿using System.Collections.Immutable;
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Globalization;
 using CSharpFunctionalExtensions;
 using SessionMemory.Clients;
+using SessionMemory.Clients.Synthetic;
 
 namespace SessionMemory
 {
@@ -19,8 +19,10 @@ namespace SessionMemory
         private const long ArchiveAfterRecentBytes = 4_000_000;
 
         private readonly string _root;
-        private readonly ClientContext _context;
-        private readonly ImmutableArray<ISessionClient> _clients;
+        private readonly Corpus _corpus;
+        private readonly Indexer _indexer;
+        private readonly SearchServer _searchServer;
+        private readonly ExclusionService _exclusions;
         // A build task never faults: its failure is the "{ExceptionType}: {Message}" text, so Task.WhenAll waits for every build.
         private readonly Dictionary<string, Task<Result<TierState, string>>> _running = [];
         private readonly Dictionary<string, DateTime> _failedAt = [];
@@ -30,16 +32,28 @@ namespace SessionMemory
         private string? _corpusHash;
         private Process? _server;
 
-        public Watcher(ClientContext context, ImmutableArray<ISessionClient> clients)
+        public Watcher(ClientContext context, Corpus corpus, Indexer indexer, SearchServer searchServer, ExclusionService exclusions)
         {
             _root = context.Root;
-            _context = context;
-            _clients = clients;
+            _corpus = corpus;
+            _indexer = indexer;
+            _searchServer = searchServer;
+            _exclusions = exclusions;
         }
 
         public static bool RecentDue(bool exists, string signature, string published, DateTime now, DateTime lastChange, DateTime? firstUnbuilt, bool once) =>
             !exists || signature != published
             && (once || now - lastChange >= Debounce || firstUnbuilt is { } first && now - first >= MaxDebounce);
+
+        // Only one watcher or refresh runs at a time; a second one stops at once, a refresh with exit code 3. Every index build is validated by
+        // finding the canary, so a new machine gets it before its first build.
+        public Result<int, CliError> RunExclusive(bool once, bool force)
+        {
+            using var single = new Mutex(true, @"Local\LeannSessionMemoryWatcher", out var created);
+            if (!created) return new CliError("Another SessionMemory watcher or refresh is already running.", once ? 3 : 0);
+            SyntheticTranscripts.EnsureCanary(_root);
+            return RunAsync(once, force).GetAwaiter().GetResult();
+        }
 
         public async Task<int> RunAsync(bool once, bool force)
         {
@@ -76,23 +90,23 @@ namespace SessionMemory
         {
             var published = Collect();
             if (!once && (published || _server is not { HasExited: false })) RestartServer();
-            var capture = Corpus.Capture(_context, _clients);
+            var capture = _corpus.Capture();
             _errors.Remove("capture");
             var manifest = capture.Manifest;
             var now = DateTime.UtcNow;
             TrackCorpusChange(capture, now);
-            var archive = Indexer.LoadState(_root, "archive");
+            var archive = _indexer.LoadState("archive");
             var recent = Indexer.RecentDocuments(manifest.Documents, archive.Documents);
             var recentBytes = recent.Keys.Sum(name => manifest.Documents[name].Bytes);
             if (RecentBuildDue(archive, recent, recentBytes, once, force, now))
             {
-                Start(Indexer.Stage(_root, "recent", recent, manifest.CorpusHash));
+                Start(_indexer.Stage("recent", recent, manifest.CorpusHash));
                 _firstUnbuilt = null;
             }
             if (ArchiveBuildDue(archive, recentBytes, force, now))
             {
                 var all = manifest.Documents.ToDictionary(pair => pair.Key, pair => pair.Value.Sha256);
-                Start(Indexer.Stage(_root, "archive", all, manifest.CorpusHash));
+                Start(_indexer.Stage("archive", all, manifest.CorpusHash));
             }
             WriteStatus(capture, recent.Count, recentBytes);
         }
@@ -112,7 +126,7 @@ namespace SessionMemory
 
         private bool RecentBuildDue(TierState archive, Dictionary<string, string> recent, long recentBytes, bool once, bool force, DateTime now)
         {
-            var recentDue = force || RecentDue(Indexer.Exists(_root, "recent"), Indexer.Signature(recent), Indexer.LoadState(_root, "recent").Signature,
+            var recentDue = force || RecentDue(_indexer.Exists("recent"), Indexer.Signature(recent), _indexer.LoadState("recent").Signature,
                 now, _lastChange, _firstUnbuilt, once);
             // A changed set this large is the archive's job; building both would embed it twice.
             return archive.Documents.Count > 0 && (force || recentBytes <= ArchiveAfterRecentBytes) && CanStart("recent", force, now) && recentDue;
@@ -120,7 +134,7 @@ namespace SessionMemory
 
         private bool ArchiveBuildDue(TierState archive, long recentBytes, bool force, DateTime now)
         {
-            var archiveDue = force || !Indexer.Exists(_root, "archive") || archive.Documents.Count == 0 || recentBytes > ArchiveAfterRecentBytes
+            var archiveDue = force || !_indexer.Exists("archive") || archive.Documents.Count == 0 || recentBytes > ArchiveAfterRecentBytes
                              || PurgeDue(archive, now);
             return CanStart("archive", force, now) && archiveDue;
         }
@@ -132,7 +146,7 @@ namespace SessionMemory
         // so a batch of exclusions costs one rebuild.
         private bool PurgeDue(TierState archive, DateTime now)
         {
-            var path = Corpus.ExclusionsPath(_root);
+            var path = _exclusions.FilePath;
             if (!File.Exists(path) || !DateTimeOffset.TryParse(archive.PublishedAt, CultureInfo.InvariantCulture, out var published)) return false;
             var changed = File.GetLastWriteTimeUtc(path);
             return changed > (published - TimeSpan.FromSeconds(archive.DurationSeconds)).UtcDateTime && now - changed >= Debounce;
@@ -146,13 +160,13 @@ namespace SessionMemory
 
         // A build that throws is recorded like one that fails.
         private Result<TierState, string> Build(StagedBuild staged) =>
-            Result.Try(() => Indexer.Build(_root, staged), Attempt.Describe).Match(built => built, Result.Failure<TierState, string>);
+            Result.Try(() => _indexer.Build(staged), Attempt.Describe).Match(built => built, Result.Failure<TierState, string>);
 
         private void RestartServer() =>
             Result.Try(() =>
                 {
                     SearchServer.Stop(_server);
-                    return SearchServer.Start(_root);
+                    return _searchServer.Start();
                 }, Attempt.Describe)
                 .Match(ServerStarted, ServerFailed);
 
@@ -183,7 +197,7 @@ namespace SessionMemory
 
         private bool BuildPublished(string tier, TierState state)
         {
-            Store.Save(Indexer.StatePath(_root, tier), state);
+            Store.Save(_indexer.StatePath(tier), state);
             _failedAt.Remove(tier);
             _errors.Remove(tier);
             Log($"{tier} build published in {state.DurationSeconds:0.#} s: {state.Documents.Count} documents");

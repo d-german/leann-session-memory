@@ -1,6 +1,8 @@
 ﻿using System.Collections.Frozen;
 using System.Collections.Immutable;
 using System.Text.Json.Nodes;
+using CSharpFunctionalExtensions;
+using Microsoft.Extensions.DependencyInjection;
 using SessionMemory.Clients;
 
 namespace SessionMemory
@@ -13,16 +15,11 @@ namespace SessionMemory
             InfrastructureFilterChecks();
             InfrastructureHitsChecks();
             var temporary = Directory.CreateTempSubdirectory("session-memory-infrastructure-");
-            try
-            {
-                InfrastructureStateChecks(Path.Combine(temporary.FullName, "state"));
-                InfrastructureSearchChecks(Path.Combine(temporary.FullName, "search"));
-                InfrastructureWatcherChecks(Path.Combine(temporary.FullName, "watcher"), Path.Combine(temporary.FullName, "failing"));
-            }
-            finally
-            {
-                temporary.Delete(recursive: true);
-            }
+            using var cleanup = new TemporaryDirectory(temporary.FullName);
+            InfrastructureStateChecks(Path.Combine(temporary.FullName, "state"));
+            InfrastructureSearchChecks(Path.Combine(temporary.FullName, "search"));
+            InfrastructureWatcherChecks(Path.Combine(temporary.FullName, "watcher"), Path.Combine(temporary.FullName, "failing"));
+            InfrastructureTemporaryDirectoryChecks(Path.Combine(temporary.FullName, "temporary"));
         }
 
         private static void InfrastructureFilterChecks()
@@ -70,9 +67,11 @@ namespace SessionMemory
 
         private static void InfrastructureStateChecks(string root)
         {
-            Check(Indexer.LoadState(root, "recent") is { IndexName: "", BuildId: "", PublishedAt: "", CorpusHash: "", Signature: "", DurationSeconds: 0, Documents.Count: 0 },
+            using var services = Services(Path.Combine(root, "home"), root);
+            var indexer = services.GetRequiredService<Indexer>();
+            Check(indexer.LoadState("recent") is { IndexName: "", BuildId: "", PublishedAt: "", CorpusHash: "", Signature: "", DurationSeconds: 0, Documents.Count: 0 },
                 "reads a missing tier state as empty");
-            var path = Indexer.StatePath(root, "archive");
+            var path = indexer.StatePath("archive");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, """{"index_name": "session-memory", "duration_seconds": 1.5}""");
             Check(Store.Load<TierState>(path) is { IndexName: "session-memory", BuildId: "", PublishedAt: "", CorpusHash: "", Signature: "", DurationSeconds: 1.5, Documents.Count: 0 },
@@ -94,11 +93,11 @@ namespace SessionMemory
             Check(Store.LoadNode(path) is JsonObject saved
                   && saved.Select(pair => pair.Key).SequenceEqual(["index_name", "build_id", "published_at", "corpus_hash", "signature", "duration_seconds", "documents"]),
                 "keeps tier-state property names and order");
-            Check(Indexer.LoadState(root, "archive") is { Signature: "s", DurationSeconds: 2.5 } reloaded && reloaded.Documents.Keys.SequenceEqual(["z.md", "a.md"]),
+            Check(indexer.LoadState("archive") is { Signature: "s", DurationSeconds: 2.5 } reloaded && reloaded.Documents.Keys.SequenceEqual(["z.md", "a.md"]),
                 "keeps tier-state documents in order");
             Directory.CreateDirectory(Path.Combine(root, "corpus"));
             File.WriteAllText(Path.Combine(root, "corpus", "a.md"), "a");
-            var staged = Indexer.Stage(root, "recent", new Dictionary<string, string>
+            var staged = indexer.Stage("recent", new Dictionary<string, string>
             {
                 ["a.md"] = "1",
                 ["gone.md"] = "2"
@@ -111,60 +110,73 @@ namespace SessionMemory
         {
             Check(new SearchRequest
             {
-                Root = root,
                 Query = "q"
             } is { TopK: 8, Json: false, IncludeCurrent: false, OnlySession: null }, "defaults a search to eight results");
-            using var error = new StringWriter();
-            var standardError = Console.Error;
-            int exitCode;
-            Console.SetError(error);
-            try
+            using var services = Services(Path.Combine(root, "home"), root);
+            var searched = services.GetRequiredService<Indexer>().Search(new SearchRequest
             {
-                exitCode = Indexer.Search(new SearchRequest
-                {
-                    Root = root,
-                    Query = "canary",
-                    TopK = 3,
-                    Json = true,
-                    IncludeCurrent = true,
-                    OnlySession = "abcdef12"
-                });
-            }
-            finally
-            {
-                Console.SetError(standardError);
-            }
-            Check(exitCode == 1 && error.ToString().Trim() == "No session-memory index has been built yet.", "fails a search before any index is built");
+                Query = "canary",
+                TopK = 3,
+                Json = true,
+                IncludeCurrent = true,
+                OnlySession = "abcdef12"
+            });
+            Check(searched.IsFailure && searched.Error == new CliError("No session-memory index has been built yet.", 1), "fails a search before any index is built");
             // Only probes the health endpoint: a server for another data root, or none at all, answers nothing for this one.
-            Check(SearchServer.Search(root, "session-memory", "canary", 1) is null, "leaves another data root's search server alone");
+            Check(services.GetRequiredService<SearchServer>().Search("session-memory", "canary", 1) is null, "leaves another data root's search server alone");
         }
 
         private static void InfrastructureWatcherChecks(string root, string failing)
         {
+            using var services = Services(Path.Combine(root, "home"), root, []);
+            var indexer = services.GetRequiredService<Indexer>();
             // Both indexes exist and match the empty corpus, so the one-time refresh starts no LEANN build.
             Directory.CreateDirectory(Path.Combine(root, ".leann", "indexes", Indexer.IndexName("archive")));
             Directory.CreateDirectory(Path.Combine(root, ".leann", "indexes", Indexer.IndexName("recent")));
-            Store.Save(Indexer.StatePath(root, "archive"), new TierState
+            Store.Save(indexer.StatePath("archive"), new TierState
             {
                 Documents = new Dictionary<string, string>
                 {
                     ["kept.md"] = "1"
                 }
             });
-            Store.Save(Indexer.StatePath(root, "recent"), new TierState
+            Store.Save(indexer.StatePath("recent"), new TierState
             {
                 Signature = Indexer.Signature(new Dictionary<string, string>())
             });
-            Check(new Watcher(new ClientContext(Path.Combine(root, "home"), root), []).RunAsync(true, false).GetAwaiter().GetResult() == 0,
+            Check(services.GetRequiredService<Watcher>().RunAsync(true, false).GetAwaiter().GetResult() == 0,
                 "refreshes once without rebuilding unchanged indexes");
             var status = Store.LoadNode(Path.Combine(root, "state", "watcher.json"));
             Check(status?["capture"]?["reparsed"] is JsonArray { Count: 0 } && status["building"] is JsonArray { Count: 0 } && status["errors"] is JsonObject { Count: 0 },
                 "writes the watcher status");
             Check(File.ReadAllText(Path.Combine(root, "logs", "watcher.log")).Contains("one-time refresh started"), "logs the refresh");
             var broken = new LambdaSessionClient("broken", _ => throw new IOException("sources unreadable"), _ => throw new InvalidOperationException("never parsed"));
-            Check(new Watcher(new ClientContext(Path.Combine(failing, "home"), failing), [broken]).RunAsync(true, false).GetAwaiter().GetResult() == 1
+            using var failingServices = Services(Path.Combine(failing, "home"), failing, [broken]);
+            Check(failingServices.GetRequiredService<Watcher>().RunAsync(true, false).GetAwaiter().GetResult() == 1
                   && File.ReadAllText(Path.Combine(failing, "logs", "watcher.log")).Contains("cycle failed: IOException: sources unreadable"),
                 "records a failed cycle as its exception type and message");
+        }
+
+        // The folder goes however its scope ends, including by an exception; a folder that is already gone is no error.
+        private static void InfrastructureTemporaryDirectoryChecks(string root)
+        {
+            var finished = Path.Combine(root, "finished");
+            Directory.CreateDirectory(Path.Combine(finished, "docs"));
+            File.WriteAllText(Path.Combine(finished, "docs", "a.md"), "a");
+            using (new TemporaryDirectory(finished)) Check(Directory.Exists(finished), "keeps a temporary folder while its scope runs");
+            var thrown = Path.Combine(root, "thrown");
+            Directory.CreateDirectory(thrown);
+            var escaped = Result.Try(() => ThrowInside(thrown));
+            new TemporaryDirectory(Path.Combine(root, "never-created")).Dispose();
+            Check(!Directory.Exists(finished) && escaped is { IsFailure: true, Error: "escapes the scope" } && !Directory.Exists(thrown),
+                "deletes a temporary folder when its scope ends, also by an exception");
+            return;
+
+            static void ThrowInside(string folder)
+            {
+                using var workspace = new TemporaryDirectory(folder);
+                throw new InvalidOperationException("escapes the scope");
+            }
         }
     }
 }

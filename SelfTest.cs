@@ -1,12 +1,13 @@
-﻿using System.Collections.Immutable;
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Nodes;
 using CSharpFunctionalExtensions;
+using Microsoft.Extensions.DependencyInjection;
 using SessionMemory.Clients;
 using SessionMemory.Clients.Codex;
 using SessionMemory.Clients.Copilot;
 using SessionMemory.Clients.Synthetic;
 using SessionMemory.Clients.VsCode;
+using SessionMemory.Commands;
 
 namespace SessionMemory
 {
@@ -18,11 +19,13 @@ namespace SessionMemory
             PassageChecks();
 
             SelectionChecks();
+            CurrentSessionChecks();
             FinderChecks();
             FilterChecks();
 
             WatcherChecks();
             CliChecks();
+            CommandChecks();
 
             CorpusRefactorChecks();
             InfrastructureRefactorChecks();
@@ -31,14 +34,8 @@ namespace SessionMemory
             JsonRefactorChecks();
 
             var temporary = Directory.CreateTempSubdirectory("session-memory-test-");
-            try
-            {
-                CaptureChecks(temporary.FullName);
-            }
-            finally
-            {
-                temporary.Delete(recursive: true);
-            }
+            using var cleanup = new TemporaryDirectory(temporary.FullName);
+            CaptureChecks(temporary.FullName);
             Console.WriteLine("{\"ok\": true}");
             return 0;
         }
@@ -116,29 +113,14 @@ namespace SessionMemory
             }, 5);
             Check(filtered.Select(hit => $"{hit["tier"].AsString()}:{hit["file"].AsString()}").SequenceEqual(["recent:b.md", "archive:a.md"]),
                 "drops stale archive copies and removed sessions, keeping LEANN's order");
-            Check(Corpus.IsExcluded("ca7418a7-e5e7:subagent:x", ["ca7418a7"]) && !Corpus.IsExcluded("ca7418a8-0000", ["ca7418a7"]), "matches exclusions by prefix");
+            Check(ExclusionService.IsExcluded("ca7418a7-e5e7:subagent:x", ["ca7418a7"]) && !ExclusionService.IsExcluded("ca7418a8-0000", ["ca7418a7"]),
+                "matches exclusions by prefix");
             var missingRoot = Path.Combine(Path.GetTempPath(), "session-memory-no-such-root");
-            Check(Corpus.SearchExclusions(missingRoot, false, "19815249-ee80").SequenceEqual(["19815249-ee80"]), "searches leave out the current session");
-            Check(Corpus.SearchExclusions(missingRoot, true, "19815249-ee80").IsEmpty, "--include-current keeps the current session");
-            Check(Corpus.SearchExclusions(missingRoot, false, "abc").IsEmpty, "ignores a current session ID too short to be safe");
-            var saved = Corpus.CurrentSessionVariables.ToDictionary(name => name, Environment.GetEnvironmentVariable);
-            try
-            {
-                foreach (var name in Corpus.CurrentSessionVariables) Environment.SetEnvironmentVariable(name, null);
-                Check(Corpus.CurrentSession() is null, "detects no current session when no host sets one");
-                Environment.SetEnvironmentVariable("COPILOT_AGENT_SESSION_ID", "abcdef12-3456");
-                Check(Corpus.CurrentSession() == "abcdef12-3456", "detects the current Copilot session");
-                Environment.SetEnvironmentVariable("COPILOT_AGENT_SESSION_ID", "abc");
-                Check(Corpus.CurrentSession() is null, "ignores a detected session ID too short to be safe");
-                Environment.SetEnvironmentVariable("CLAUDE_CODE_SESSION_ID", " 0f1e2d3c-4b5a ");
-                Check(Corpus.CurrentSession() == "0f1e2d3c-4b5a", "detects the current Claude Code session");
-                Environment.SetEnvironmentVariable("CODEX_THREAD_ID", "9a8b7c6d-5e4f");
-                Check(Corpus.CurrentSession() == "9a8b7c6d-5e4f", "detects the current Codex thread");
-            }
-            finally
-            {
-                foreach (var (name, value) in saved) Environment.SetEnvironmentVariable(name, value);
-            }
+            using var services = Services(Path.Combine(missingRoot, "home"), missingRoot);
+            var exclusions = services.GetRequiredService<ExclusionService>();
+            Check(exclusions.ForSearch(false, "19815249-ee80").SequenceEqual(["19815249-ee80"]), "searches leave out the current session");
+            Check(exclusions.ForSearch(true, "19815249-ee80").IsEmpty, "--include-current keeps the current session");
+            Check(exclusions.ForSearch(false, "abc").IsEmpty, "ignores a current session ID too short to be safe");
             var sessions = new Dictionary<string, DocumentMeta>
             {
                 ["parent.md"] = new()
@@ -229,30 +211,38 @@ namespace SessionMemory
         // The command-line rails: options, transcript headings, exclusions and session lookup against a manifest in a temporary root.
         private static void CliChecks()
         {
-            List<string> arguments = ["search", "--top-k", "12", "q"];
-            var parsed = Program.Number(arguments, "--top-k", 8);
-            var absent = Program.Number(["search"], "--top-k", 8);
-            var bad = Program.Number(["search", "--top-k", "x"], "--top-k", 8);
-            var huge = Program.Number(["search", "--top-k", "99999999999"], "--top-k", 8);
-            Check(parsed.GetValueOrDefault() == 12 && arguments.SequenceEqual(["search", "q"]) && absent.GetValueOrDefault() == 8, "reads whole-number options");
+            var arguments = new CommandArguments(["search", "--top-k", "12", "q"]);
+            var parsed = arguments.Number("--top-k", 8);
+            var absent = new CommandArguments(["search"]).Number("--top-k", 8);
+            var bad = new CommandArguments(["search", "--top-k", "x"]).Number("--top-k", 8);
+            var huge = new CommandArguments(["search", "--top-k", "99999999999"]).Number("--top-k", 8);
+            Check(parsed.GetValueOrDefault() == 12 && arguments is { Verb: "search", Operands: ["q"] } && absent.GetValueOrDefault() == 8, "reads whole-number options");
             Check(bad.IsFailure && bad.Error.ExitCode == 2 && bad.Error.Message.StartsWith("'x' is not a whole number for --top-k.\nUsage: ", StringComparison.Ordinal)
                   && huge.IsFailure && huge.Error.Message.StartsWith("'99999999999' is not a whole number for --top-k.\n", StringComparison.Ordinal), "rejects a bad number with the usage");
+            CliArgumentChecks();
             var overflow = Compact.Segments("## Message 99999999999 part 1/1\nbody");
             var foreign = Compact.Segments("## Message \u0663 part 1/1\nbody");
             Check(overflow is [{ Number: 0, Role: "", Text: "## Message 99999999999 part 1/1\nbody" }] && foreign is [{ Number: 0, Role: "" }],
                 "reads a heading whose number is not a plain int as text");
             var temporary = Directory.CreateTempSubdirectory("session-memory-cli-test-");
-            try
-            {
-                CliSessions(temporary.FullName);
-                CliExclusionChecks(temporary.FullName);
-                CliFindSessionChecks(temporary.FullName);
-                CliShowChecks(temporary.FullName);
-            }
-            finally
-            {
-                temporary.Delete(recursive: true);
-            }
+            using var cleanup = new TemporaryDirectory(temporary.FullName);
+            CliSessions(temporary.FullName);
+            using var services = Services(Path.Combine(temporary.FullName, "home"), temporary.FullName);
+            CliExclusionChecks(services.GetRequiredService<ExclusionService>());
+            CliFindSessionChecks(services.GetRequiredService<SessionReader>(), temporary.FullName);
+            CliShowChecks(services.GetRequiredService<SessionReader>());
+        }
+
+        // A flag or an option is taken out at its first occurrence; an option without a value stays among the operands.
+        private static void CliArgumentChecks()
+        {
+            var arguments = new CommandArguments(["find", "--json", "x", "--json", "--top"]);
+            Check(arguments.Flag("--json") && !arguments.Flag("--partial") && arguments.Option("--top").HasNoValue && arguments.Operands is ["x", "--json", "--top"],
+                "takes the first occurrence of a flag and leaves an option without a value");
+            var root = new CommandArguments(["find", "--root", "C:\\data", "x", "--root"]);
+            Check(root.Option("--root").GetValueOrDefault() == "C:\\data" && root is { Verb: "find", Operands: ["x", "--root"] }, "takes an option and its value out");
+            Check(new CommandArguments(["show", "x", "/?"]).AsksForHelp && new CommandArguments(["-h"]).AsksForHelp && !new CommandArguments(["show", "-help"]).AsksForHelp
+                  && new CommandArguments([]) is { Verb: null, Operands.IsEmpty: true }, "recognizes a request for help and a missing verb");
         }
 
         // Sessions that share ID prefixes: a parent with a subagent, a sibling, an exact ID that prefixes a longer one, and twelve alike.
@@ -284,62 +274,63 @@ namespace SessionMemory
         };
 
         // The ID is checked before anything is read; nothing is saved or printed until the caller taps the result.
-        private static void CliExclusionChecks(string root)
+        private static void CliExclusionChecks(ExclusionService exclusions)
         {
             const string canary = "The canary session validates every index build and cannot be excluded.";
-            Check(CliFails(Program.ExclusionChange(root, " abc ", true), "Give at least 8 characters of the session ID.", 2), "requires 8 characters of a session ID");
-            Check(CliFails(Program.ExclusionChange(root, "leann-memory", true), canary, 2) && CliFails(Program.ExclusionChange(root, "LEANN-MEMORY-CANARY", false), canary, 2),
+            Check(CliFails(exclusions.Exclude(" abc "), "Give at least 8 characters of the session ID.", 2)
+                  && CliFails(exclusions.Include("abcdef1"), "Give at least 8 characters of the session ID.", 2), "requires 8 characters of a session ID");
+            Check(CliFails(exclusions.Exclude("leann-memory"), canary, 2) && CliFails(exclusions.Include("LEANN-MEMORY-CANARY"), canary, 2),
                 "never excludes or includes the canary");
-            Check(CliFails(Program.ExclusionChange(root, "zzzzzzzz-none", true), "No indexed session starts with 'zzzzzzzz-none'.", 1), "reports an unknown session to exclude");
-            Check(CliFails(Program.ExclusionChange(root, "zzzzzzzz-none", false), "'zzzzzzzz-none' is not excluded.", 1), "reports a session that is not excluded");
-            var excluded = Program.ExclusionChange(root, " abcdef12-3456 ", true);
+            Check(CliFails(exclusions.Exclude("zzzzzzzz-none"), "No indexed session starts with 'zzzzzzzz-none'.", 1), "reports an unknown session to exclude");
+            Check(CliFails(exclusions.Include("zzzzzzzz-none"), "'zzzzzzzz-none' is not excluded.", 1), "reports a session that is not excluded");
+            var excluded = exclusions.Exclude(" abcdef12-3456 ");
             Check(excluded.IsSuccess && excluded.Value.Exclusions.SequenceEqual(["abcdef12-3456"])
                                      && excluded.Value.Report.SequenceEqual(["Excluded abcdef12-3456 (codex) Parent", "Excluded abcdef12-3456:subagent:x (codex) Subagent"])
-                                     && !File.Exists(Corpus.ExclusionsPath(root)), "excludes a session and its subagents without saving");
-            Store.Save(Corpus.ExclusionsPath(root), new List<string>
+                                     && !File.Exists(exclusions.FilePath), "excludes a session and its subagents without saving");
+            exclusions.Save(excluded.Value);
+            Check(exclusions.Load().SequenceEqual(["abcdef12-3456"]), "saves the checked exclusions");
+            Store.Save(exclusions.FilePath, new List<string>
             {
                 "ABCDEF12-3456"
             });
-            var again = Program.ExclusionChange(root, "abcdef12-3456", true);
-            var included = Program.ExclusionChange(root, "abcdef12-3456", false);
+            var again = exclusions.Exclude("abcdef12-3456");
+            var included = exclusions.Include("abcdef12-3456");
             Check(again.IsSuccess && again.Value.Exclusions.SequenceEqual(["ABCDEF12-3456"]) && included.IsSuccess && included.Value.Exclusions.IsEmpty
-                  && included.Value.Report.SequenceEqual(["Included abcdef12-3456 again."]) && Corpus.LoadExclusions(root).Count == 1, "includes an excluded session again");
+                  && included.Value.Report.SequenceEqual(["Included abcdef12-3456 again."]) && exclusions.Load().Count == 1, "includes an excluded session again");
         }
 
         // An exact ID wins, then the only session that is not a subagent; otherwise the prefix is unknown or ambiguous.
-        private static void CliFindSessionChecks(string root)
+        private static void CliFindSessionChecks(SessionReader reader, string root)
         {
-            Check(CliFile(Compact.FindSession(root, "FEDCBA98-7654")) == "exact.md" && CliFile(Compact.FindSession(root, "abcdef12-34")) == "parent.md"
-                                                                                    && CliFile(Compact.FindSession(root, "abcdef12-3456:sub")) == "subagent.md", "resolves an ID prefix to one session");
-            Check(CliFails(Compact.FindSession(root, "zzzzzzzz"), "No indexed session starts with 'zzzzzzzz'.", 2)
-                  && CliFails(Compact.FindSession(Path.Combine(root, "no-such-root"), "abcdef12"), "No indexed session starts with 'abcdef12'.", 2), "reports an unknown session");
-            Check(CliFails(Compact.FindSession(root, "abcdef12"), "Several sessions match; give more of the ID:\n  abcdef12-3456 | codex | Parent\n" +
-                                                                  "  abcdef12-3456:subagent:x | codex | Subagent\n  abcdef12-9999 | claude-code | Sibling", 2), "lists the sessions a prefix matches");
-            var many = Compact.FindSession(root, "11111111");
+            using var elsewhere = Services(Path.Combine(root, "home"), Path.Combine(root, "no-such-root"));
+            Check(CliFile(reader.FindSession("FEDCBA98-7654")) == "exact.md" && CliFile(reader.FindSession("abcdef12-34")) == "parent.md"
+                                                                         && CliFile(reader.FindSession("abcdef12-3456:sub")) == "subagent.md", "resolves an ID prefix to one session");
+            Check(CliFails(reader.FindSession("zzzzzzzz"), "No indexed session starts with 'zzzzzzzz'.", 2)
+                  && CliFails(elsewhere.GetRequiredService<SessionReader>().FindSession("abcdef12"), "No indexed session starts with 'abcdef12'.", 2), "reports an unknown session");
+            Check(CliFails(reader.FindSession("abcdef12"), "Several sessions match; give more of the ID:\n  abcdef12-3456 | codex | Parent\n" +
+                                                           "  abcdef12-3456:subagent:x | codex | Subagent\n  abcdef12-9999 | claude-code | Sibling", 2), "lists the sessions a prefix matches");
+            var many = reader.FindSession("11111111");
             Check(many.IsFailure && many.Error.ExitCode == 2 && many.Error.Message.Split('\n').Length == 11, "lists at most ten sessions");
         }
 
-        private static void CliShowChecks(string root)
+        private static void CliShowChecks(SessionReader reader)
         {
-            var shown = Compact.Show(new ShowRequest
+            var shown = reader.Show(new ShowRequest
             {
-                Root = root,
                 Id = "fedcba98-7654",
                 Around = "retry",
                 Max = 1
             });
             Check(shown.GetValueOrDefault("") == "== fedcba98-7654 | codex | 1 messages | last 2026-10-20 19:40 | Exact\n1 matching messages\n" +
                 "[#1 user 2026-10-20 19:40] The retry limit is 5.\n", "shows the matching messages of a session");
-            var unreadable = Compact.Show(new ShowRequest
+            var unreadable = reader.Show(new ShowRequest
             {
-                Root = root,
                 Id = "abcdef12-34"
             });
             Check(unreadable.IsFailure && unreadable.Error.ExitCode == 2 && unreadable.Error.Message.StartsWith("FileNotFoundException: ", StringComparison.Ordinal),
                 "reports a transcript it cannot read");
-            var invalid = Compact.Show(new ShowRequest
+            var invalid = reader.Show(new ShowRequest
             {
-                Root = root,
                 Id = "fedcba98-7654",
                 Around = "("
             });
@@ -358,40 +349,41 @@ namespace SessionMemory
             Directory.CreateDirectory(Path.GetDirectoryName(source)!);
             var initial = Line("u1", "user", "What is the retry limit?") + Line("a1", "assistant", "The retry limit is 2.");
             File.WriteAllText(source, initial);
-            var context = new ClientContext(Path.Combine(root, "home"), root);
-            ImmutableArray<ISessionClient> clients = [ClientRegistry.Synthetic];
-            var first = Corpus.Capture(context, clients);
+            var synthetic = RegisteredClients().Single(client => client.Name == SyntheticTranscripts.FamilyName);
+            using var services = Services(Path.Combine(root, "home"), root, [synthetic]);
+            var capture = services.GetRequiredService<Corpus>();
+            var first = capture.Capture();
             File.AppendAllText(source, Line("a2", "assistant", "Correction: the current retry limit is 5 and supersedes 2."));
-            var second = Corpus.Capture(context, clients);
-            var third = Corpus.Capture(context, clients);
+            var second = capture.Capture();
+            var third = capture.Capture();
             Check(first.Changed && second.Changed && !third.Changed, "detects an appended message once");
             Check(first.Manifest.CorpusHash != second.Manifest.CorpusHash, "changes the corpus hash");
             File.WriteAllText(source, initial + "{partial");
-            var removed = Corpus.Capture(context, clients);
+            var removed = capture.Capture();
             var corpus = string.Concat(Directory.EnumerateFiles(Path.Combine(root, "corpus"), "*.md").Select(File.ReadAllText));
             Check(removed.Changed && !corpus.Contains("supersedes 2") && corpus.Contains("The retry limit is 2."), "drops removed messages");
             Check(removed.Manifest.Families["synthetic"].Stats["partial_trailing"] == 1, "ignores a partial trailing record");
-            var shown = Compact.Show(new ShowRequest
+            var reader = services.GetRequiredService<SessionReader>();
+            var shown = reader.Show(new ShowRequest
             {
-                Root = root,
                 Id = Indexer.CanaryId
             });
-            var matched = Compact.Show(new ShowRequest
+            var matched = reader.Show(new ShowRequest
             {
-                Root = root,
                 Id = "leann-memory",
                 Around = "retry limit is"
             });
             Check(shown.IsSuccess && shown.Value.Contains("[#2 assistant 2026-10-21 00:00] The retry limit is 2.") && matched.IsSuccess
                   && matched.Value.Contains("1 matching messages") && !matched.Value.Contains("#1 user"), "shows a session's last or matching messages");
-            Store.Save(Corpus.ExclusionsPath(root), new List<string>
+            var exclusions = services.GetRequiredService<ExclusionService>();
+            Store.Save(exclusions.FilePath, new List<string>
             {
                 Indexer.CanaryId
             });
-            var excluded = Corpus.Capture(context, clients);
+            var excluded = capture.Capture();
             Check(excluded.Manifest.DocumentCount == 0 && !Directory.EnumerateFiles(Path.Combine(root, "corpus"), "*.md").Any(), "removes excluded sessions from the corpus");
-            File.Delete(Corpus.ExclusionsPath(root));
-            Check(Corpus.Capture(context, clients).Manifest.DocumentCount == 1, "brings an included session back");
+            File.Delete(exclusions.FilePath);
+            Check(capture.Capture().Manifest.DocumentCount == 1, "brings an included session back");
 
             var chat = Path.Combine(root, "chat.jsonl");
             File.WriteAllLines(chat,
@@ -424,7 +416,7 @@ namespace SessionMemory
 
             var fresh = Path.Combine(root, "fresh");
             SyntheticTranscripts.EnsureCanary(fresh);
-            var seeded = ClientRegistry.Synthetic.Parse(new ClientContext(fresh, fresh)).Documents.Single();
+            var seeded = synthetic.Parse(new ClientContext(fresh, fresh)).Documents.Single();
             Check(seeded is { SessionId: Indexer.CanaryId, Messages.Length: 3 }, "seeds the canary on a new machine");
         }
 

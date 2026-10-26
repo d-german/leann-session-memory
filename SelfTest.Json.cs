@@ -13,16 +13,10 @@ namespace SessionMemory
             JsonIntOrChecks();
             JsonParseChecks();
             var temporary = Directory.CreateTempSubdirectory("session-memory-json-test-");
-            try
-            {
-                JsonlCountChecks(temporary.FullName);
-                JsonlFilterChecks(temporary.FullName);
-                SqliteReaderChecks(temporary.FullName);
-            }
-            finally
-            {
-                temporary.Delete(recursive: true);
-            }
+            using var cleanup = new TemporaryDirectory(temporary.FullName);
+            JsonlCountChecks(temporary.FullName);
+            JsonlFilterChecks(temporary.FullName);
+            SqliteReaderChecks(temporary.FullName);
         }
 
         private static void JsonIntOrChecks()

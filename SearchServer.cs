@@ -2,6 +2,7 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
 using CSharpFunctionalExtensions;
+using SessionMemory.Clients;
 
 namespace SessionMemory
 {
@@ -9,7 +10,7 @@ namespace SessionMemory
     /// A resident <c>leann-dotnet --serve</c>, so a search skips the per-process model and index load
     /// (about 0.2 s instead of 13 s). LEANN caches loaded indexes, so the watcher restarts it after each publish.
     /// </summary>
-    internal static class SearchServer
+    sealed internal class SearchServer
     {
         public const int Port = 57392;
         private static readonly HttpClient Client = new()
@@ -18,16 +19,25 @@ namespace SessionMemory
             Timeout = TimeSpan.FromSeconds(60)
         };
 
-        public static Process? Start(string root)
+        private readonly string _root;
+        private readonly LeannInstallation _leann;
+
+        public SearchServer(ClientContext paths, LeannInstallation leann)
         {
-            var start = new ProcessStartInfo(Indexer.Leann)
+            _root = paths.Root;
+            _leann = leann;
+        }
+
+        public Process? Start()
+        {
+            var start = new ProcessStartInfo(_leann.Executable)
             {
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
             foreach (var argument in new[]
                      {
-                         "--serve", "--port", Port.ToString(CultureInfo.InvariantCulture), "--data-root", root
+                         "--serve", "--port", Port.ToString(CultureInfo.InvariantCulture), "--data-root", _root
                      })
                 start.ArgumentList.Add(argument);
             // CPU keeps GPU memory free for builds; embedding one query is fast either way.
@@ -46,9 +56,9 @@ namespace SessionMemory
         }
 
         // Returns null when no server answers for this data root, so the caller falls back to a fresh process.
-        public static string? Search(string root, string index, string query, int topK)
+        public string? Search(string index, string query, int topK)
         {
-            if (!string.Equals(IndexesDirectory(), Path.Combine(root, ".leann", "indexes"), StringComparison.OrdinalIgnoreCase)) return null;
+            if (!string.Equals(IndexesDirectory(), Path.Combine(_root, ".leann", "indexes"), StringComparison.OrdinalIgnoreCase)) return null;
             var url = $"search?index={Uri.EscapeDataString(index)}&query={Uri.EscapeDataString(query)}" +
                       $"&top_k={topK.ToString(CultureInfo.InvariantCulture)}&dedup_threshold=0&show_metadata=true&format=json";
             return Get(url, Client.Timeout)

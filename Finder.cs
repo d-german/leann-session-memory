@@ -13,14 +13,10 @@ namespace SessionMemory
 {
     /// <summary>
     /// What to find. Only names a session ID or prefix whose excerpts are all listed; Since keeps records at or after that time;
-    /// Outputs adds Copilot CLI tool results to what is searched; Clients are the clients whose stores are searched.
+    /// Outputs adds Copilot CLI tool results to what is searched.
     /// </summary>
     sealed internal record FindRequest
     {
-        public required string Root { get; init; }
-
-        public required string Home { get; init; }
-
         public required ImmutableArray<string> Terms { get; init; }
 
         public int Top { get; init; } = 8;
@@ -36,26 +32,36 @@ namespace SessionMemory
         public DateTimeOffset? Since { get; init; }
 
         public bool Outputs { get; init; }
-
-        // Every registered client unless the caller hands in others, as the self-test does.
-        public ImmutableArray<ISessionClient> Clients { get; init; } = ClientRegistry.All;
     }
 
     /// <summary>
     /// Exact-term search over the raw stores. Unlike the semantic index it also covers tool inputs such as edits,
     /// commands and page updates, whose full text would nearly triple the index. Tool outputs stay out as noise unless asked for.
+    /// The clients whose stores are searched are the registered ones.
     /// </summary>
-    internal static partial class Finder
+    sealed internal partial class Finder
     {
         private const int WindowChars = 300;
 
-        // With a session ID (or prefix), lists every matching excerpt in that session instead of one per session.
-        public static int Run(FindRequest request)
+        private readonly ClientContext _paths;
+        private readonly ImmutableArray<ISessionClient> _clients;
+        private readonly ExclusionService _exclusions;
+
+        public Finder(ClientContext paths, IEnumerable<ISessionClient> clients, ExclusionService exclusions)
+        {
+            _paths = paths;
+            _clients = [.. clients];
+            _exclusions = exclusions;
+        }
+
+        // With a session ID (or prefix), lists every matching excerpt in that session instead of one per session. Returns the compact text or,
+        // for --json, the ASCII JSON.
+        public string Find(FindRequest request)
         {
             var stopwatch = Stopwatch.StartNew();
             // find --top 3 names no terms; a request built without any behaves the same.
             var terms = request.Terms.IsDefaultOrEmpty ? [] : request.Terms;
-            var manifest = Store.Load<Manifest>(Path.Combine(request.Root, "state", "manifest.json"));
+            var manifest = Store.Load<Manifest>(Path.Combine(_paths.Root, "state", "manifest.json"));
             var documents = manifest?.Documents ?? [];
             var work = WorkItems(request, documents);
             // Load balancing hands files out one at a time, so a few large logs don't pile up on one core.
@@ -70,28 +76,28 @@ namespace SessionMemory
 
             var byId = documents.GroupBy(pair => pair.Value.SessionId).ToDictionary(group => group.Key, group => group.First());
             // Naming a session with --session asks for it, even when it is the current one.
-            var exclusions = Corpus.SearchExclusions(request.Root, request.IncludeCurrent || request.Only is not null);
+            var exclusions = _exclusions.ForSearch(request.IncludeCurrent || request.Only is not null);
             var sessions = found
-                .Where(pair => pair.Value.Mentions.All(count => count > 0) && !Corpus.IsExcluded(pair.Key.SessionId, exclusions))
+                .Where(pair => pair.Value.Mentions.All(count => count > 0) && !ExclusionService.IsExcluded(pair.Key.SessionId, exclusions))
                 .OrderByDescending(pair => pair.Value.LastAllTerms, StringComparer.Ordinal)
                 .ThenByDescending(pair => pair.Value.LastMention, StringComparer.Ordinal)
                 .ToList();
             var listed = sessions.Take(request.Only is null ? request.Top : 20).ToList();
             var after = request.Since is { } time ? Utc(time) : null;
-            if (request.Json) WriteJson(request, terms, after, sessions.Count, listed, byId, stopwatch);
-            else WriteText(request, terms, after, sessions.Count, listed, byId);
-            return 0;
+            return request.Json
+                ? RenderJson(request, terms, after, sessions.Count, listed, byId, stopwatch)
+                : RenderText(request, terms, after, sessions.Count, listed, byId);
         }
 
         // Files are independent, so each one is a work item scanned on its own core. Every client hands out its own work, in
-        // registry order, so the Codex row ranges, the longest single items, go first.
-        private static List<Action<Scan>> WorkItems(FindRequest request, Dictionary<string, DocumentMeta> documents)
+        // registration order, so the Codex row ranges, the longest single items, go first.
+        private List<Action<Scan>> WorkItems(FindRequest request, Dictionary<string, DocumentMeta> documents)
         {
-            var context = new FindContext(request.Home, documents, request.Outputs);
-            return [.. request.Clients.SelectMany(client => client.FindWork(context))];
+            var context = new FindContext(_paths.Home, documents, request.Outputs);
+            return [.. _clients.SelectMany(client => client.FindWork(context))];
         }
 
-        private static void WriteText(FindRequest request, ImmutableArray<string> terms, string? since, int matching,
+        private static string RenderText(FindRequest request, ImmutableArray<string> terms, string? since, int matching,
             List<KeyValuePair<SessionKey, Found>> listed, Dictionary<string, KeyValuePair<string, DocumentMeta>> byId)
         {
             var window = since is null ? "" : $" since {since.Replace('T', ' ')} UTC";
@@ -107,10 +113,10 @@ namespace SessionMemory
                     document.Match((_, meta) => meta.Title, () => ""))).Append('\n');
                 foreach (var snippet in Shown(session, request.Only, request.Top)) text.Append($"  [{Compact.Time(snippet.At)} {snippet.Where}] {snippet.Text}\n");
             }
-            Compact.Write(Compact.Plain(text.ToString()));
+            return Compact.Plain(text.ToString());
         }
 
-        private static void WriteJson(FindRequest request, ImmutableArray<string> terms, string? since, int matching,
+        private string RenderJson(FindRequest request, ImmutableArray<string> terms, string? since, int matching,
             List<KeyValuePair<SessionKey, Found>> listed, Dictionary<string, KeyValuePair<string, DocumentMeta>> byId, Stopwatch stopwatch)
         {
             var results = new JsonArray();
@@ -135,7 +141,7 @@ namespace SessionMemory
                             ["text"] = snippet.Text
                         })
                     ]),
-                    ["transcript"] = document.Map(pair => Path.Combine(request.Root, "corpus", pair.Key)).GetValueOrDefault()
+                    ["transcript"] = document.Map(pair => Path.Combine(_paths.Root, "corpus", pair.Key)).GetValueOrDefault()
                 });
             }
             var response = new JsonObject
@@ -146,10 +152,10 @@ namespace SessionMemory
                 ["sessions"] = results
             };
             if (since is not null) response["since"] = since;
-            Console.Out.WriteLine(Indexer.Ascii(response.ToJsonString(new JsonSerializerOptions
+            return Indexer.Ascii(response.ToJsonString(new JsonSerializerOptions
             {
                 WriteIndented = true
-            })));
+            }));
         }
 
         private static IEnumerable<Snippet> Shown(Found session, string? only, int top) => only is null

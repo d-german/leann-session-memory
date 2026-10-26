@@ -4,8 +4,8 @@ namespace SessionMemory.Clients
 {
     /// <summary>
     /// One AI assistant (a "client") whose sessions this tool indexes: its manifest family, the session variable its host sets,
-    /// the files it watches, how they become documents and how find searches them. Corpus.Capture, Finder.Run, Watcher and
-    /// Corpus.CurrentSession use clients only through this interface; ClientRegistry lists the implementations.
+    /// the files it watches, how they become documents and how find searches them. Corpus, Finder and CurrentSession receive the
+    /// registered clients through their constructors and use them only through this interface; ClientRegistration registers the implementations.
     /// </summary>
     internal interface ISessionClient
     {

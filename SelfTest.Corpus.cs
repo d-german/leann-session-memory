@@ -1,6 +1,7 @@
 ﻿using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.DependencyInjection;
 using SessionMemory.Clients;
 
 namespace SessionMemory
@@ -12,16 +13,10 @@ namespace SessionMemory
             CorpusRecordChecks();
             CorpusTimestampChecks();
             var temporary = Directory.CreateTempSubdirectory("session-memory-corpus-test-");
-            try
-            {
-                CorpusStoreChecks(Path.Combine(temporary.FullName, "store"));
-                CorpusExclusionChecks(Path.Combine(temporary.FullName, "exclusions"));
-                CorpusCaptureChecks(Path.Combine(temporary.FullName, "capture"));
-            }
-            finally
-            {
-                temporary.Delete(recursive: true);
-            }
+            using var cleanup = new TemporaryDirectory(temporary.FullName);
+            CorpusStoreChecks(Path.Combine(temporary.FullName, "store"));
+            CorpusExclusionChecks(Path.Combine(temporary.FullName, "exclusions"));
+            CorpusCaptureChecks(Path.Combine(temporary.FullName, "capture"));
         }
 
         private static void CorpusRecordChecks()
@@ -168,16 +163,20 @@ namespace SessionMemory
         private static void CorpusExclusionChecks(string root)
         {
             List<string> saved = ["aaaaaaaa"];
-            Store.Save(Corpus.ExclusionsPath(root), saved);
-            var excluded = Corpus.SearchExclusions(root, false, " bbbbbbbb-1 ");
-            Check(excluded.SequenceEqual(["aaaaaaaa", "bbbbbbbb-1"]) && Corpus.LoadExclusions(root).SequenceEqual(["aaaaaaaa"]),
+            using var services = Services(Path.Combine(root, "home"), root);
+            using var elsewhere = Services(Path.Combine(root, "home"), Path.Combine(root, "none"));
+            var exclusions = services.GetRequiredService<ExclusionService>();
+            Store.Save(exclusions.FilePath, saved);
+            var excluded = exclusions.ForSearch(false, " bbbbbbbb-1 ");
+            Check(excluded.SequenceEqual(["aaaaaaaa", "bbbbbbbb-1"]) && exclusions.Load().SequenceEqual(["aaaaaaaa"]),
                 "leaves out the current session without saving it");
-            Check(Corpus.SearchExclusions(root, true, "bbbbbbbb-1").SequenceEqual(["aaaaaaaa"])
-                  && Corpus.SearchExclusions(root, false, "bbbb").SequenceEqual(["aaaaaaaa"]), "keeps the current session when asked or when its ID is too short");
-            Check(Corpus.SearchExclusions(Path.Combine(root, "none"), true) is { IsDefault: false, IsEmpty: true }, "returns no exclusions without a file");
-            Check(Corpus.IsExcluded("AAAAAAAA:subagent:x", excluded) && Corpus.IsExcluded("bbbbbbbb-1", excluded) && !Corpus.IsExcluded("bbbbbbbb-2", excluded),
+            Check(exclusions.ForSearch(true, "bbbbbbbb-1").SequenceEqual(["aaaaaaaa"])
+                  && exclusions.ForSearch(false, "bbbb").SequenceEqual(["aaaaaaaa"]), "keeps the current session when asked or when its ID is too short");
+            Check(elsewhere.GetRequiredService<ExclusionService>().ForSearch(true) is { IsDefault: false, IsEmpty: true }, "returns no exclusions without a file");
+            Check(ExclusionService.IsExcluded("AAAAAAAA:subagent:x", excluded) && ExclusionService.IsExcluded("bbbbbbbb-1", excluded)
+                                                                              && !ExclusionService.IsExcluded("bbbbbbbb-2", excluded),
                 "matches exclusions by prefix, ignoring case");
-            Check(!Corpus.IsExcluded("aaaaaaaa", []), "excludes nothing without exclusions");
+            Check(!ExclusionService.IsExcluded("aaaaaaaa", []), "excludes nothing without exclusions");
         }
 
         private static void CorpusCaptureChecks(string root)
@@ -190,9 +189,8 @@ namespace SessionMemory
             // The second document cannot render, so the family fails after the first one is already in the corpus.
             var partial = new LambdaSessionClient("partial", _ => [],
                 _ => new FamilyResult([CorpusDocument("partial", "partial-1", "rendered"), CorpusDocument("partial", "partial-2", null!)], []));
-            var context = new ClientContext(Path.Combine(root, "home"), root);
             ImmutableArray<ISessionClient> clients = [good, broken, partial];
-            var first = Corpus.Capture(context, clients);
+            var first = CaptureWith(root, clients);
             var reports = first.Manifest.Families;
             Check(first.Reparsed.SequenceEqual(["good", "broken", "partial"]) && reports["good"] is { Ok: true, Error: "", Fingerprint.Length: 64 }
                                                                               && reports["good"].Stats["sessions"] == 1, "parses every family once");
@@ -201,16 +199,16 @@ namespace SessionMemory
                 "fails a family whose document cannot render");
             Check(first.Manifest.Documents.Values.Select(meta => meta.SessionId).Order(StringComparer.Ordinal).SequenceEqual(["good-session", "partial-1"]),
                 "keeps the documents rendered before a failure");
-            var second = Corpus.Capture(context, clients);
+            var second = CaptureWith(root, clients);
             Check(second.Reparsed.SequenceEqual(["broken", "partial"]) && second.Manifest.Families["good"].Fingerprint == reports["good"].Fingerprint,
                 "re-reads failed families but not an unchanged one");
             Check(second is { Changed: false, Manifest.DocumentCount: 2 } && second.Manifest.Families["broken"].Error == "InvalidOperationException: boom",
                 "keeps the corpus while families keep failing");
-            Check(Corpus.Capture(context, []) is { Changed: false, Reparsed.IsEmpty: true, Manifest.DocumentCount: 2 }, "keeps the corpus when no family is re-read");
-            var injected = Corpus.Capture(context, [.. clients, new FakeClient()]);
+            Check(CaptureWith(root, []) is { Changed: false, Reparsed.IsEmpty: true, Manifest.DocumentCount: 2 }, "keeps the corpus when no family is re-read");
+            var injected = CaptureWith(root, [.. clients, new FakeClient()]);
             Check(injected.Reparsed.SequenceEqual(["broken", "partial", "fake"]) && injected.Manifest.Families.Keys.SequenceEqual(["good", "broken", "partial", "fake"])
                                                                                   && injected.Manifest.Documents.Values.Any(meta => meta.SessionId == "fake-session"),
-                "captures any ISessionClient, in the order given");
+                "captures any registered ISessionClient, in registration order");
         }
 
         private static Document CorpusDocument(string family, string sessionId, string text) =>

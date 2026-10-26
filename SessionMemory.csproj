@@ -14,6 +14,8 @@
   <ItemGroup>
     <!-- Result, Maybe and their combinators for railway-style error handling. -->
     <PackageReference Include="CSharpFunctionalExtensions" Version="3.6.0" />
+    <!-- Constructor injection: the commands, services and clients are composed in one service collection. -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.14" />
     <!-- Codex compresses older rollouts with Zstandard, which .NET 10 cannot decode. -->
     <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
   </ItemGroup>

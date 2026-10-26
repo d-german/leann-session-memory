@@ -1,12 +1,19 @@
 ﻿using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.DependencyInjection;
 using SessionMemory.Clients;
 
 namespace SessionMemory
 {
     internal static partial class SelfTest
     {
+        private static readonly FindRequest FinderRequest = new()
+        {
+            Terms = ["zebra", "quokka"],
+            Json = true
+        };
+
         private static void FinderRefactorChecks()
         {
             FinderTermChecks();
@@ -14,18 +21,14 @@ namespace SessionMemory
             FinderSinceChecks();
             FinderExcerptChecks();
             var temporary = Directory.CreateTempSubdirectory("session-memory-finder-test-");
-            try
-            {
-                var request = FinderStores(temporary.FullName);
-                FinderOutputChecks(request);
-                FinderWindowChecks(request);
-                FinderCurrentChecks(request);
-                FinderClientChecks(request);
-            }
-            finally
-            {
-                temporary.Delete(recursive: true);
-            }
+            using var cleanup = new TemporaryDirectory(temporary.FullName);
+            var paths = FinderStores(temporary.FullName);
+            using var services = Services(paths.Home, paths.Root);
+            var finder = services.GetRequiredService<Finder>();
+            FinderOutputChecks(finder, paths.Root);
+            FinderWindowChecks(finder);
+            FinderCurrentChecks(finder, services.GetRequiredService<CurrentSession>());
+            FinderClientChecks(paths);
         }
 
         private static void FinderTermChecks()
@@ -104,7 +107,7 @@ namespace SessionMemory
         }
 
         // Copilot CLI sessions with messages, a tool result, and the result of the memory tool's own find; one of them is indexed.
-        private static FindRequest FinderStores(string directory)
+        private static ClientContext FinderStores(string directory)
         {
             var root = Path.Combine(directory, "root");
             var home = Path.Combine(directory, "home");
@@ -137,13 +140,7 @@ namespace SessionMemory
                     }
                 }
             });
-            return new FindRequest
-            {
-                Root = root,
-                Home = home,
-                Terms = ["zebra", "quokka"],
-                Json = true
-            };
+            return new ClientContext(home, root);
         }
 
         private static void FinderEvents(string home, string sessionId, ImmutableArray<string> lines)
@@ -153,15 +150,15 @@ namespace SessionMemory
             File.WriteAllLines(Path.Combine(directory, "events.jsonl"), lines);
         }
 
-        private static void FinderOutputChecks(FindRequest request)
+        private static void FinderOutputChecks(Finder finder, string root)
         {
-            var plain = FinderRun(request);
+            var plain = FinderRun(finder, FinderRequest);
             var messages = plain["sessions"]!.AsArray().Single()!;
             Check(plain["matching_sessions"]!.GetValue<int>() == 1 && plain["since"] is null && messages["session_id"]!.GetValue<string>() == "aaaaaaaa-1111"
                   && messages["client"]!.GetValue<string>() == "copilot" && messages["title"]!.GetValue<string>() == "" && messages["transcript"] is null
                   && messages["mentions"]!["zebra"]!.GetValue<int>() == 3 && messages["mentions"]!["quokka"]!.GetValue<int>() == 2
                   && messages["snippets"]![0]!["where"]!.GetValue<string>() == "assistant.message.content", "finds Copilot messages but not tool results by default");
-            var outputs = FinderRun(request with
+            var outputs = FinderRun(finder, FinderRequest with
             {
                 Outputs = true
             });
@@ -170,40 +167,40 @@ namespace SessionMemory
             Check(outputs["matching_sessions"]!.GetValue<int>() == 2 && sessions[0]!["session_id"]!.GetValue<string>() == "aaaaaaaa-1111"
                   && tool["session_id"]!.GetValue<string>() == "bbbbbbbb-2222" && tool["client"]!.GetValue<string>() == "copilot-cli"
                   && tool["title"]!.GetValue<string>() == "Listing files"
-                  && tool["transcript"]!.GetValue<string>() == Path.Combine(request.Root, "corpus", "copilot-bbbbbbbb.md")
+                  && tool["transcript"]!.GetValue<string>() == Path.Combine(root, "corpus", "copilot-bbbbbbbb.md")
                   && tool["snippets"]![0]!["where"]!.GetValue<string>() == "tool output content", "adds tool results with --outputs, but not the memory tool's own");
         }
 
-        private static void FinderWindowChecks(FindRequest request)
+        private static void FinderWindowChecks(Finder finder)
         {
-            var since = FinderRun(request with
+            var since = FinderRun(finder, FinderRequest with
             {
                 Since = new DateTimeOffset(2026, 2, 1, 1, 0, 0, TimeSpan.FromHours(1))
             });
             Check(since["since"]!.GetValue<string>() == "2026-02-01T00:00:00" && since["sessions"]!.AsArray().Single()!["mentions"]!["zebra"]!.GetValue<int>() == 2,
                 "counts only records since the given time, read as UTC");
-            var later = FinderRun(request with
+            var later = FinderRun(finder, FinderRequest with
             {
                 Since = new DateTimeOffset(2026, 4, 1, 0, 0, 0, TimeSpan.Zero),
                 Outputs = true
             });
             Check(later["matching_sessions"]!.GetValue<int>() == 0 && later["sessions"]!.AsArray().Count == 0, "finds nothing after the newest record");
-            var drill = FinderRun(request with
+            var drill = FinderRun(finder, FinderRequest with
             {
                 Only = "AAAAAAAA",
                 Top = 1
             });
-            var drilled = FinderRun(request with
+            var drilled = FinderRun(finder, FinderRequest with
             {
                 Only = "aaaaaaaa"
             });
             Check(drill["sessions"]!.AsArray().Single()!["snippets"]!.AsArray().Single()!["text"]!.GetValue<string>() == "zebra beside a quokka"
                   && drilled["sessions"]!.AsArray().Single()!["snippets"]!.AsArray().Count == 2, "drills into one session's excerpts, newest first, up to --top");
-            var none = FinderRun(request with
+            var none = FinderRun(finder, FinderRequest with
             {
                 Terms = []
             });
-            var unset = FinderRun(request with
+            var unset = FinderRun(finder, FinderRequest with
             {
                 Terms = default
             });
@@ -212,19 +209,19 @@ namespace SessionMemory
         }
 
         // The session running a find is left out unless it is asked for, with --include-current or by naming it.
-        private static void FinderCurrentChecks(FindRequest request)
+        private static void FinderCurrentChecks(Finder finder, CurrentSession current)
         {
-            var variable = Corpus.CurrentSessionVariables[0];
+            var variable = current.Variables[0];
             var original = Environment.GetEnvironmentVariable(variable);
             Environment.SetEnvironmentVariable(variable, "aaaaaaaa-1111");
             try
             {
-                var skipped = FinderRun(request);
-                var included = FinderRun(request with
+                var skipped = FinderRun(finder, FinderRequest);
+                var included = FinderRun(finder, FinderRequest with
                 {
                     IncludeCurrent = true
                 });
-                var named = FinderRun(request with
+                var named = FinderRun(finder, FinderRequest with
                 {
                     Only = "aaaaaaaa"
                 });
@@ -237,40 +234,21 @@ namespace SessionMemory
             }
         }
 
-        // Runs a JSON find and parses what it wrote.
-        private static JsonNode FinderRun(FindRequest request)
-        {
-            var console = Console.Out;
-            using var output = new StringWriter();
-            Console.SetOut(output);
-            try
-            {
-                Check(Finder.Run(request) == 0, "finds with exit code 0");
-            }
-            finally
-            {
-                Console.SetOut(console);
-            }
-            return JsonNode.Parse(output.ToString())!;
-        }
+        // Runs a JSON find and parses what it returns.
+        private static JsonNode FinderRun(Finder finder, FindRequest request) => JsonNode.Parse(finder.Find(request))!;
 
-        // Find scans whatever clients the request names, so a client written here replaces the real stores.
-        private static void FinderClientChecks(FindRequest request)
+        // Find scans the registered clients, so a client registered in their place replaces the real stores.
+        private static void FinderClientChecks(ClientContext paths)
         {
-            Check(request.Clients.SequenceEqual(ClientRegistry.All), "searches every registered client by default");
-            var injected = FinderRun(request with
-            {
-                Clients = [new FakeClient()]
-            });
+            using var injectedServices = Services(paths.Home, paths.Root, [new FakeClient()]);
+            var injected = FinderRun(injectedServices.GetRequiredService<Finder>(), FinderRequest);
             var session = injected["sessions"]!.AsArray().Single()!;
             Check(injected["matching_sessions"]!.GetValue<int>() == 1 && session["session_id"]!.GetValue<string>() == "ffffffff-0000"
                                                                      && session["client"]!.GetValue<string>() == "fake-client"
                                                                      && session["snippets"]![0]!["where"]!.GetValue<string>() == "fake",
-                "searches a client given in the request instead of the registered ones");
-            var none = FinderRun(request with
-            {
-                Clients = []
-            });
+                "searches a client registered instead of the real ones");
+            using var noServices = Services(paths.Home, paths.Root, []);
+            var none = FinderRun(noServices.GetRequiredService<Finder>(), FinderRequest);
             Check(none["matching_sessions"]!.GetValue<int>() == 0, "finds nothing without clients");
         }
 
