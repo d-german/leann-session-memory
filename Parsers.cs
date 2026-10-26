@@ -1,12 +1,14 @@
-﻿using System.Globalization;
+﻿using System.Collections.Immutable;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using CSharpFunctionalExtensions;
 
 namespace SessionMemory
 {
-    sealed internal class Family
+    sealed internal record Family
     {
-        public Family(string name, Func<IReadOnlyList<string>> sources, Func<FamilyResult> parse)
+        public Family(string name, Func<ImmutableArray<string>> sources, Func<FamilyResult> parse)
         {
             Name = name;
             Sources = sources;
@@ -16,7 +18,7 @@ namespace SessionMemory
         public string Name { get; }
 
         // Files whose size and timestamp decide whether the family must be parsed again.
-        public Func<IReadOnlyList<string>> Sources { get; }
+        public Func<ImmutableArray<string>> Sources { get; }
 
         public Func<FamilyResult> Parse { get; }
     }
@@ -24,7 +26,7 @@ namespace SessionMemory
     /// <summary>Reads each assistant's local transcript store, mirroring the original Python bridge.</summary>
     internal static partial class Parsers
     {
-        public static IReadOnlyList<Family> All(string home, string root) =>
+        public static ImmutableArray<Family> All(string home, string root) =>
         [
             Synthetic(root),
             new("codex", () => CodexSources(home), () => Codex(home)),
@@ -92,7 +94,7 @@ namespace SessionMemory
             return text;
         }
 
-        private static IReadOnlyList<string> CodexSources(string home) =>
+        private static ImmutableArray<string> CodexSources(string home) =>
             [.. DatabaseFiles(CodexHistory(home)), .. CodexRollouts(home), CodexIndex(home), .. CodexStates(home).SelectMany(DatabaseFiles)];
 
         private static string CodexIndex(string home) => Path.Combine(home, ".codex", "session_index.jsonl");
@@ -103,7 +105,7 @@ namespace SessionMemory
                 ? Directory.EnumerateFiles(Path.Combine(home, ".codex"), "state_*.sqlite").Order(StringComparer.Ordinal).TakeLast(1)
                 : [];
 
-        private static IReadOnlyList<string> CopilotSources(string home) =>
+        private static ImmutableArray<string> CopilotSources(string home) =>
         [
             .. DatabaseFiles(Path.Combine(CopilotRoot(home), "data.db")),
             .. DatabaseFiles(Path.Combine(CopilotRoot(home), "session-store.db")),
@@ -123,7 +125,7 @@ namespace SessionMemory
                 : [];
         }
 
-        private static IReadOnlyList<string> SyntheticFiles(string root)
+        private static ImmutableArray<string> SyntheticFiles(string root)
         {
             var directory = Path.Combine(root, "synthetic");
             return Directory.Exists(directory) ? [.. Directory.EnumerateFiles(directory, "*.jsonl")] : [];
@@ -137,12 +139,13 @@ namespace SessionMemory
             if (File.Exists(history)) CodexReadHistory(history, sessions, stats);
             foreach (var path in CodexRollouts(home)) CodexAddRollout(path, sessions, stats);
             var titles = CodexTitles(home);
-            var documents = sessions
-                .Select(pair => new Document("codex", "codex", pair.Key, $"{history}#thread_id={pair.Key}", pair.Value)
+            ImmutableArray<Document> documents =
+            [
+                .. sessions.Select(pair => new Document("codex", "codex", pair.Key, $"{history}#thread_id={pair.Key}", [.. pair.Value])
                 {
                     Title = titles.GetValueOrDefault(pair.Key, "")
                 })
-                .ToList();
+            ];
             return new FamilyResult(documents, stats);
         }
 
@@ -154,14 +157,8 @@ namespace SessionMemory
             stats["sqlite_threads"] = sessions.Count;
             stats["projection_without_items"] = Sql.IntOr(database.Query(
                 "SELECT count(*) FROM thread_history_projection_state p WHERE NOT EXISTS (SELECT 1 FROM thread_items i WHERE i.thread_id=p.thread_id)").First()[0], 0);
-            try
-            {
-                CodexReadRealtime(database, sessions, stats);
-            }
-            catch (IOException)
-            {
-                // Older Codex stores have no realtime table.
-            }
+            // Older Codex stores have no realtime table.
+            if (database.HasTable("thread_realtime_items")) CodexReadRealtime(database, sessions, stats);
             database.Execute("ROLLBACK");
         }
 
@@ -276,18 +273,19 @@ namespace SessionMemory
             }
         }
 
+        // A state database that cannot be opened or queried only loses its titles.
         private static void CodexAddStateTitles(string state, Dictionary<string, string> titles)
         {
-            try
-            {
-                using var database = new SqliteReader(state);
-                foreach (var row in database.Query("SELECT id, name FROM threads WHERE name IS NOT NULL AND name <> ''"))
-                    titles[Sql.Str(row[0])] = Sql.Str(row[1]);
-            }
-            catch (IOException)
-            {
-            }
+            foreach (var row in QueryOnce(state, "SELECT id, name FROM threads WHERE name IS NOT NULL AND name <> ''").GetValueOrDefault([]))
+                titles[Sql.Str(row[0])] = Sql.Str(row[1]);
         }
+
+        // Opens the database for one materialized query and closes it again.
+        private static Result<ImmutableArray<object?[]>, string> QueryOnce(string path, string sql) =>
+            SqliteReader.Open(path).Bind(database =>
+            {
+                using (database) return database.TryQuery(sql);
+            });
 
         private static FamilyResult Claude(string home)
         {
@@ -311,7 +309,7 @@ namespace SessionMemory
                     });
                 }
             }
-            return new FamilyResult(documents, stats);
+            return new FamilyResult([.. documents], stats);
         }
 
         private static (Dictionary<string, Dictionary<string, Message>> Sessions, string Title) ClaudeReadFile(string path, bool subagent, JsonlStats fileStats)
@@ -385,8 +383,8 @@ namespace SessionMemory
                 stats["malformed"] += fileStats.Malformed;
                 stats["partial_trailing"] += fileStats.PartialTrailing;
             }
-            var documents = grouped.Select(pair => new Document("synthetic", "synthetic-proof", pair.Key, sources[pair.Key], pair.Value)).ToList();
-            stats["sessions"] = documents.Count;
+            ImmutableArray<Document> documents = [.. grouped.Select(pair => new Document("synthetic", "synthetic-proof", pair.Key, sources[pair.Key], [.. pair.Value]))];
+            stats["sessions"] = documents.Length;
             return new FamilyResult(documents, stats);
         }
 
@@ -422,34 +420,15 @@ namespace SessionMemory
             }
         }
 
-        private static List<string> SubDirectories(string directory)
-        {
-            try
-            {
-                return
-                [
-                    .. new DirectoryInfo(directory).EnumerateDirectories()
-                        .Where(child => !child.Attributes.HasFlag(FileAttributes.ReparsePoint))
-                        .Select(child => child.FullName)
-                ];
-            }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-            {
-                return [];
-            }
-        }
+        private static List<string> SubDirectories(string directory) =>
+            Listing(() => new DirectoryInfo(directory).EnumerateDirectories()
+                .Where(child => !child.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                .Select(child => child.FullName));
 
-        private static List<string> Files(string directory, string pattern)
-        {
-            try
-            {
-                return [.. Directory.EnumerateFiles(directory, pattern)];
-            }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-            {
-                return [];
-            }
-        }
+        private static List<string> Files(string directory, string pattern) => Listing(() => Directory.EnumerateFiles(directory, pattern));
+
+        // A directory that vanished or cannot be read lists nothing, so the walk goes on without it.
+        private static List<string> Listing(Func<IEnumerable<string>> entries) => Attempt.Io(() => entries().ToList()).GetValueOrDefault([]);
 
         [GeneratedRegex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", RegexOptions.Compiled | RegexOptions.RightToLeft)]
         private static partial Regex MyRegex();

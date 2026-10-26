@@ -1,30 +1,34 @@
-﻿using System.Diagnostics;
+﻿using System.Collections.Frozen;
+using System.Collections.Immutable;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using CSharpFunctionalExtensions;
 
 namespace SessionMemory
 {
-    sealed internal class TierState
+    sealed internal record TierState
     {
-        public string IndexName { get; set; } = "";
+        public string IndexName { get; init; } = "";
 
-        public string BuildId { get; set; } = "";
+        public string BuildId { get; init; } = "";
 
-        public string PublishedAt { get; set; } = "";
+        public string PublishedAt { get; init; } = "";
 
-        public string CorpusHash { get; set; } = "";
+        public string CorpusHash { get; init; } = "";
 
-        public string Signature { get; set; } = "";
+        public string Signature { get; init; } = "";
 
-        public double DurationSeconds { get; set; }
+        public double DurationSeconds { get; init; }
 
-        public Dictionary<string, string> Documents { get; set; } = [];
+        public Dictionary<string, string> Documents { get; init; } = [];
     }
 
-    sealed internal class StagedBuild
+    sealed internal record StagedBuild
     {
         public StagedBuild(string tier, string buildRoot, Dictionary<string, string> documents, string corpusHash)
         {
@@ -34,20 +38,54 @@ namespace SessionMemory
             CorpusHash = corpusHash;
         }
 
-        public string Tier { get; }
+        public string Tier { get; init; }
 
-        public string BuildRoot { get; }
+        public string BuildRoot { get; init; }
 
-        public Dictionary<string, string> Documents { get; }
+        public Dictionary<string, string> Documents { get; init; }
 
-        public string CorpusHash { get; }
+        public string CorpusHash { get; init; }
+    }
+
+    /// <summary>One search command: the query and the options that shape its results.</summary>
+    sealed internal record SearchRequest
+    {
+        public required string Root { get; init; }
+
+        public required string Query { get; init; }
+
+        public int TopK { get; init; } = 8;
+
+        public bool Json { get; init; }
+
+        public bool IncludeCurrent { get; init; }
+
+        // Narrows the search to one session and its subagents.
+        public string? OnlySession { get; init; }
+    }
+
+    /// <summary>What one LEANN .NET process exited with and wrote.</summary>
+    sealed internal record LeannOutput
+    {
+        public LeannOutput(int exitCode, string output, string error)
+        {
+            ExitCode = exitCode;
+            Output = output;
+            Error = error;
+        }
+
+        public int ExitCode { get; init; }
+
+        public string Output { get; init; }
+
+        public string Error { get; init; }
     }
 
     /// <summary>Builds, publishes, and searches the recent and archive LEANN indexes.</summary>
     internal static class Indexer
     {
         public const string CanaryId = "LEANN-MEMORY-CANARY-20261021";
-        public static readonly string[] Tiers = ["recent", "archive"];
+        public static readonly ImmutableArray<string> Tiers = ["recent", "archive"];
         private const string Model = "facebook/contriever";
         // A long session matches many queries; the cap leaves room for other sessions.
         private const int MaxHitsPerSession = 3;
@@ -98,38 +136,28 @@ namespace SessionMemory
             return new StagedBuild(tier, buildRoot, copied, corpusHash);
         }
 
-        public static TierState Build(string root, StagedBuild staged)
+        // Failures read "{ExceptionType}: {Message}", the text the watcher has always persisted for a failed build.
+        public static Result<TierState, string> Build(string root, StagedBuild staged)
         {
-            if (!File.Exists(Leann) || !File.Exists(ModelFile)) throw new FileNotFoundException("LEANN .NET or the facebook/contriever model is missing.");
+            if (!File.Exists(Leann) || !File.Exists(ModelFile))
+                return Result.Failure<TierState, string>($"{nameof(FileNotFoundException)}: LEANN .NET or the facebook/contriever model is missing.");
             var stopwatch = Stopwatch.StartNew();
             var index = IndexName(staged.Tier);
             var logs = Path.Combine(root, "logs");
             Directory.CreateDirectory(logs);
-            var docs = Path.Combine(staged.BuildRoot, "docs");
+            UnitResult<string> published;
             try
             {
-                string[] arguments =
-                [
-                    "--rebuild", "--docs", docs, "--index-name", index, "--model", Model, "--file-types", ".md",
-                    "--chunk-size", "1400", "--chunk-overlap", "250", "--max-tokens", "512", "--batch-size", "16"
-                ];
-                var environment = new Dictionary<string, string>
-                {
-                    ["LEANN_DATA_ROOT"] = staged.BuildRoot,
-                    ["LEANN_MODEL"] = Model
-                };
-                var (exitCode, output, error) = RunLeann(arguments, environment, docs);
-                File.WriteAllText(Path.Combine(logs, $"{index}-build.log"), output + error);
-                if (exitCode != 0) throw new InvalidOperationException($"LEANN rebuild exited with {exitCode}; see {logs}");
-                Validate(staged.BuildRoot, index, Path.Combine(logs, $"{index}-validate.log"), "Candidate");
-                Publish(root, Path.Combine(staged.BuildRoot, ".leann", "indexes", index), index);
-                Validate(root, index, Path.Combine(logs, $"{index}-published.log"), "Published");
+                published = Rebuild(staged.BuildRoot, index, logs)
+                    .Bind(() => Validate(staged.BuildRoot, index, Path.Combine(logs, $"{index}-validate.log"), "Candidate"))
+                    .Tap(() => Publish(root, Path.Combine(staged.BuildRoot, ".leann", "indexes", index), index))
+                    .Bind(() => Validate(root, index, Path.Combine(logs, $"{index}-published.log"), "Published"));
             }
             finally
             {
                 DeleteDirectory(Path.GetDirectoryName(staged.BuildRoot)!);
             }
-            return new TierState
+            return published.Map(() => new TierState
             {
                 IndexName = index,
                 BuildId = Path.GetFileName(staged.BuildRoot),
@@ -138,55 +166,58 @@ namespace SessionMemory
                 Signature = Signature(staged.Documents),
                 DurationSeconds = Math.Round(stopwatch.Elapsed.TotalSeconds, 3),
                 Documents = staged.Documents
-            };
+            });
         }
 
         // One LEANN query ranks both indexes together. Each index's own scores are rank positions and cannot be
         // compared, so merging two separate searches let the small recent index outrank better archive matches.
-        public static int Search(string root, string query, int topK, bool json, bool includeCurrent = false, string? onlySession = null)
+        public static int Search(SearchRequest request)
         {
-            var tiers = Tiers.Where(tier => Exists(root, tier)).ToList();
-            if (tiers.Count == 0)
-            {
-                Console.Error.WriteLine("No session-memory index has been built yet.");
-                return 1;
-            }
+            ImmutableArray<string> tiers = [.. Tiers.Where(tier => Exists(request.Root, tier))];
+            if (tiers.IsEmpty) return Fail("No session-memory index has been built yet.");
             // Over-fetch, because stale archive copies and hits past the per-session cap are dropped below.
-            var (exitCode, output, error, source) = Query(root, string.Join(',', tiers.Select(IndexName)), query, Math.Min(topK * 5, 60));
-            JsonArray found;
-            try
-            {
-                found = JsonNode.Parse(output)?["results"] as JsonArray ?? throw new JsonException();
-            }
-            catch (JsonException)
-            {
-                Console.Error.WriteLine($"LEANN search failed with exit code {exitCode}: {error}");
-                return 1;
-            }
-            var recent = LoadState(root, "recent").Documents.Keys.ToHashSet();
-            var documents = Store.Load<Manifest>(Path.Combine(root, "state", "manifest.json"))?.Documents ?? [];
+            return Query(request.Root, string.Join(',', tiers.Select(IndexName)), request.Query, Math.Min(request.TopK * 5, 60))
+                .Match(found => Write(request, tiers, found.Hits, found.Source), Fail);
+        }
+
+        // LEANN's ranked hits. Output that is not JSON or holds no results array fails with the exit code and standard error.
+        internal static Result<JsonArray, string> Hits(LeannOutput output) =>
+            Attempt.Json(() => JsonNode.Parse(output.Output)?["results"] as JsonArray)
+                .GetValueOrDefault()
+                .ToResult($"LEANN search failed with exit code {output.ExitCode}: {output.Error}");
+
+        private static int Write(SearchRequest request, ImmutableArray<string> tiers, JsonArray found, string source)
+        {
+            var recent = LoadState(request.Root, "recent").Documents.Keys.ToFrozenSet();
+            var documents = Store.Load<Manifest>(Path.Combine(request.Root, "state", "manifest.json"))?.Documents ?? [];
             // Exclusions apply before the next capture removes the session from the corpus.
-            var exclusions = Corpus.SearchExclusions(root, includeCurrent);
-            var current = Visible(documents, exclusions, onlySession);
+            var exclusions = Corpus.SearchExclusions(request.Root, request.IncludeCurrent);
+            var current = Visible(documents, exclusions, request.OnlySession);
             var ranked = found.OfType<JsonObject>().Select(hit => hit.DeepClone().AsObject());
             // An empty set keeps every hit when there is no manifest, but a session with no indexed document has none.
-            var hits = onlySession is not null && current.Count == 0 ? [] : Filter(ranked, tiers, recent, current, topK);
-            if (json) WriteJson(root, query, source, hits, documents);
+            var hits = request.OnlySession is not null && current.Count == 0 ? [] : Filter(ranked, tiers, recent, current, request.TopK);
+            if (request.Json) WriteJson(request.Root, request.Query, source, hits, documents);
             else WriteText(source, hits, documents);
             return 0;
         }
 
+        private static int Fail(string message)
+        {
+            Console.Error.WriteLine(message);
+            return 1;
+        }
+
         // The documents a search may show; onlySession narrows them to one session and its subagents.
-        public static HashSet<string> Visible(IReadOnlyDictionary<string, DocumentMeta> documents, IReadOnlyCollection<string> exclusions, string? onlySession) =>
-        [
-            .. documents
+        public static FrozenSet<string> Visible(IReadOnlyDictionary<string, DocumentMeta> documents, ImmutableArray<string> exclusions, string? onlySession) =>
+            documents
                 .Where(pair => !Corpus.IsExcluded(pair.Value.SessionId, exclusions)
                                && (onlySession is null || pair.Value.SessionId.StartsWith(onlySession, StringComparison.OrdinalIgnoreCase)))
                 .Select(pair => pair.Key)
-        ];
+                .ToFrozenSet();
 
         // Labels each hit with its tier and keeps LEANN's order. A one-index search carries no index name.
-        public static List<JsonObject> Filter(IEnumerable<JsonObject> ranked, IReadOnlyList<string> tiers, IReadOnlySet<string> recent, IReadOnlySet<string> current, int topK)
+        public static ImmutableArray<JsonObject> Filter(IEnumerable<JsonObject> ranked, ImmutableArray<string> tiers, IReadOnlySet<string> recent, IReadOnlySet<string> current,
+            int topK)
         {
             var perSession = new Dictionary<string, int>();
             return
@@ -224,7 +255,7 @@ namespace SessionMemory
             (current.Count == 0 || current.Contains(file)) && (tier != "archive" || !recent.Contains(file));
 
         // One header line per session, then its matching messages without the per-message transcript headers.
-        private static void WriteText(string source, List<JsonObject> hits, Dictionary<string, DocumentMeta> documents)
+        private static void WriteText(string source, ImmutableArray<JsonObject> hits, Dictionary<string, DocumentMeta> documents)
         {
             var text = new StringBuilder();
             if (source != "server") text.Append("(the search server is not running, so this search took the slow path)\n");
@@ -238,7 +269,7 @@ namespace SessionMemory
             Compact.Write(Compact.Plain(text.ToString()));
         }
 
-        private static void WriteJson(string root, string query, string source, List<JsonObject> hits, Dictionary<string, DocumentMeta> documents)
+        private static void WriteJson(string root, string query, string source, ImmutableArray<JsonObject> hits, Dictionary<string, DocumentMeta> documents)
         {
             foreach (var hit in hits)
             {
@@ -254,20 +285,37 @@ namespace SessionMemory
             var response = new JsonObject
             {
                 ["query"] = query,
-                ["count"] = hits.Count,
+                ["count"] = hits.Length,
                 ["served_by"] = source,
                 ["results"] = new JsonArray([.. hits])
             };
             Console.Out.WriteLine(Ascii(response.ToJsonString(Output)));
         }
 
-        private static void Validate(string dataRoot, string index, string log, string label)
+        // The log is written before the exit code is checked, so a failed build leaves LEANN's output behind.
+        private static UnitResult<string> Rebuild(string buildRoot, string index, string logs)
         {
-            var (exitCode, output, error) = RunLeann(SearchArguments(dataRoot, index, CanaryId, 8));
-            File.WriteAllText(log, output + error);
-            if (exitCode != 0 || !output.Contains(CanaryId, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException($"{label} index failed canary validation; see {log}");
+            var docs = Path.Combine(buildRoot, "docs");
+            string[] arguments =
+            [
+                "--rebuild", "--docs", docs, "--index-name", index, "--model", Model, "--file-types", ".md",
+                "--chunk-size", "1400", "--chunk-overlap", "250", "--max-tokens", "512", "--batch-size", "16"
+            ];
+            var environment = new Dictionary<string, string>
+            {
+                ["LEANN_DATA_ROOT"] = buildRoot,
+                ["LEANN_MODEL"] = Model
+            };
+            return RunLeann(arguments, environment, docs)
+                .Tap(output => File.WriteAllText(Path.Combine(logs, $"{index}-build.log"), output.Output + output.Error))
+                .Ensure(output => output.ExitCode == 0, output => $"{nameof(InvalidOperationException)}: LEANN rebuild exited with {output.ExitCode}; see {logs}");
         }
+
+        private static UnitResult<string> Validate(string dataRoot, string index, string log, string label) =>
+            RunLeann(SearchArguments(dataRoot, index, CanaryId, 8))
+                .Tap(output => File.WriteAllText(log, output.Output + output.Error))
+                .Ensure(output => output.ExitCode == 0 && output.Output.Contains(CanaryId, StringComparison.OrdinalIgnoreCase),
+                    _ => $"{nameof(InvalidOperationException)}: {label} index failed canary validation; see {log}");
 
         private static void Publish(string root, string candidate, string index)
         {
@@ -300,14 +348,15 @@ namespace SessionMemory
             "--dedup-threshold", "0", "--show-metadata", "--json"
         ];
 
-        private static (int ExitCode, string Output, string Error, string Source) Query(string root, string index, string query, int topK)
-        {
-            if (SearchServer.Search(root, index, query, topK) is { } json) return (0, json, "", "server");
-            var (exitCode, output, error) = RunLeann(SearchArguments(root, index, query, topK));
-            return (exitCode, output, error, "cli");
-        }
+        // The resident server answers in a fraction of a second; without it a fresh process loads the model and indexes first.
+        // A LEANN .NET that cannot start fails with the "{ExceptionType}: {Message}" text.
+        private static Result<(JsonArray Hits, string Source), string> Query(string root, string index, string query, int topK) =>
+            SearchServer.Search(root, index, query, topK) is { } json
+                ? Hits(new LeannOutput(0, json, "")).Map(hits => (Hits: hits, Source: "server"))
+                : RunLeann(SearchArguments(root, index, query, topK)).Bind(Hits).Map(hits => (Hits: hits, Source: "cli"));
 
-        private static (int ExitCode, string Output, string Error) RunLeann(IEnumerable<string> arguments, IReadOnlyDictionary<string, string>? environment = null, string? workingDirectory = null)
+        private static Result<LeannOutput, string> RunLeann(IEnumerable<string> arguments, IReadOnlyDictionary<string, string>? environment = null,
+            string? workingDirectory = null)
         {
             var start = new ProcessStartInfo(Leann)
             {
@@ -321,11 +370,31 @@ namespace SessionMemory
             };
             foreach (var argument in arguments) start.ArgumentList.Add(argument);
             foreach (var (name, value) in environment ?? new Dictionary<string, string>()) start.Environment[name] = value;
-            using var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start LEANN .NET.");
-            var error = process.StandardError.ReadToEndAsync();
-            var output = process.StandardOutput.ReadToEnd();
-            process.WaitForExit();
-            return (process.ExitCode, output, error.GetAwaiter().GetResult());
+            return Start(start).Map(Collect);
+        }
+
+        // A missing or unrunnable executable throws Win32Exception; the failure keeps the "{ExceptionType}: {Message}" text.
+        private static Result<Process, string> Start(ProcessStartInfo start)
+        {
+            try
+            {
+                return Process.Start(start).ToResult($"{nameof(InvalidOperationException)}: Could not start LEANN .NET.");
+            }
+            catch (Win32Exception error)
+            {
+                return Result.Failure<Process, string>(Attempt.Describe(error));
+            }
+        }
+
+        private static LeannOutput Collect(Process process)
+        {
+            using (process)
+            {
+                var error = process.StandardError.ReadToEndAsync();
+                var output = process.StandardOutput.ReadToEnd();
+                process.WaitForExit();
+                return new LeannOutput(process.ExitCode, output, error.GetAwaiter().GetResult());
+            }
         }
 
         // ASCII output survives any console code page.

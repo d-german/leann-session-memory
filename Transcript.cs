@@ -1,11 +1,12 @@
-﻿using System.Globalization;
+﻿using System.Collections.Immutable;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 
 namespace SessionMemory
 {
-    sealed internal class Message
+    sealed internal record Message
     {
         public Message(string id, string role, string text, long sequence, string timestamp)
         {
@@ -16,20 +17,20 @@ namespace SessionMemory
             Timestamp = timestamp;
         }
 
-        public string Id { get; }
+        public string Id { get; init; }
 
-        public string Role { get; }
+        public string Role { get; init; }
 
-        public string Text { get; }
+        public string Text { get; init; }
 
-        public long Sequence { get; }
+        public long Sequence { get; init; }
 
-        public string Timestamp { get; }
+        public string Timestamp { get; init; }
     }
 
-    sealed internal class Document
+    sealed internal record Document
     {
-        public Document(string family, string client, string sessionId, string sourceRef, List<Message> messages)
+        public Document(string family, string client, string sessionId, string sourceRef, ImmutableArray<Message> messages)
         {
             Family = family;
             Client = client;
@@ -38,36 +39,40 @@ namespace SessionMemory
             Messages = messages;
         }
 
-        public string Family { get; }
+        public string Family { get; init; }
 
-        public string Client { get; }
+        public string Client { get; init; }
 
-        public string SessionId { get; }
+        public string SessionId { get; init; }
 
-        public string SourceRef { get; }
+        public string SourceRef { get; init; }
 
-        public List<Message> Messages { get; }
+        public ImmutableArray<Message> Messages { get; init; }
 
         // The client's name for the session, such as "Add AI to Protocol Pathway"; empty when it has none.
         public string Title { get; init; } = "";
     }
 
-    sealed internal class FamilyResult
+    sealed internal record FamilyResult
     {
-        public FamilyResult(List<Document> documents, Dictionary<string, long> stats)
+        public FamilyResult(ImmutableArray<Document> documents, Dictionary<string, long> stats)
         {
             Documents = documents;
             Stats = stats;
         }
 
-        public List<Document> Documents { get; }
+        public ImmutableArray<Document> Documents { get; init; }
 
-        public Dictionary<string, long> Stats { get; }
+        // Insertion order is the order the manifest lists the counters in, so this stays a Dictionary.
+        public Dictionary<string, long> Stats { get; init; }
     }
 
     /// <summary>Renders documents exactly like the original Python bridge, so corpus hashes stay comparable.</summary>
     internal static partial class Transcript
     {
+        // Ticks and whole seconds from the Unix epoch to DateTime.MaxValue; a later time has no DateTime, so it gives no timestamp.
+        private static readonly long MaxEpochTicks = DateTime.MaxValue.Ticks - DateTime.UnixEpoch.Ticks;
+        private static readonly long MaxEpochSeconds = MaxEpochTicks / TimeSpan.TicksPerSecond;
         private static readonly Regex ManyNewlines = MyRegex();
         private static readonly Regex UnsafeName = MyRegex1();
         private static readonly Regex Whitespace = MyRegex2();
@@ -89,11 +94,11 @@ namespace SessionMemory
         }
 
         // Python slices by code point, so a surrogate pair counts as one character.
-        public static List<string> SplitText(string text, int limit = 900)
+        public static ImmutableArray<string> SplitText(string text, int limit = 900)
         {
             var points = CodePoints(text);
             if (points.Length <= limit) return [text];
-            var parts = new List<string>();
+            var parts = ImmutableArray.CreateBuilder<string>();
             var start = 0;
             var end = points.Length;
             while (end - start > limit)
@@ -105,7 +110,7 @@ namespace SessionMemory
                 (start, end) = Trim(points, start + cut, end);
             }
             if (end > start) parts.Add(FromCodePoints(points.AsSpan(start, end - start)));
-            return parts;
+            return parts.DrainToImmutable();
         }
 
         public static string CleanTitle(string title)
@@ -134,10 +139,10 @@ namespace SessionMemory
                 var text = Normalize(message.Text);
                 if (text.Length == 0) continue;
                 var parts = SplitText(text);
-                for (var part = 0; part < parts.Count; part++)
+                for (var part = 0; part < parts.Length; part++)
                 {
                     lines.AddRange([
-                        $"## Message {position:D6} part {part + 1}/{parts.Count}",
+                        $"## Message {position:D6} part {part + 1}/{parts.Length}",
                         .. identity,
                         $"message_id: {message.Id}", $"role: {message.Role}",
                         $"timestamp: {message.Timestamp}", $"source_ref: {sourceRef}",
@@ -167,15 +172,10 @@ namespace SessionMemory
             var seconds = value / 1000;
             var whole = Math.Floor(seconds);
             var micros = (long)Math.Round((seconds - whole) * 1_000_000, MidpointRounding.ToEven);
-            try
-            {
-                var time = DateTime.UnixEpoch.AddSeconds(whole).AddTicks(micros * 10);
-                return time.ToString("yyyy-MM-dd'T'HH:mm:ss.fff", CultureInfo.InvariantCulture) + "+00:00";
-            }
-            catch (ArgumentOutOfRangeException)
-            {
-                return "";
-            }
+            // Checked before the conversion to ticks, so a huge value cannot overflow it.
+            if (whole > MaxEpochSeconds) return "";
+            var ticks = (long)whole * TimeSpan.TicksPerSecond + micros * 10;
+            return ticks > MaxEpochTicks ? "" : DateTime.UnixEpoch.AddTicks(ticks).ToString("yyyy-MM-dd'T'HH:mm:ss.fff", CultureInfo.InvariantCulture) + "+00:00";
         }
 
         // Python's str.isspace() also counts U+001C..U+001F.

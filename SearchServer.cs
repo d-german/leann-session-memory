@@ -1,7 +1,7 @@
 ﻿using System.Diagnostics;
 using System.Globalization;
-using System.Text.Json;
 using System.Text.Json.Nodes;
+using CSharpFunctionalExtensions;
 
 namespace SessionMemory
 {
@@ -37,13 +37,8 @@ namespace SessionMemory
 
         public static void Stop(Process? owned)
         {
-            try
-            {
-                Client.GetAsync("shutdown").Wait(TimeSpan.FromSeconds(3));
-            }
-            catch (AggregateException)
-            {
-            }
+            // Best effort: a server that is not running cannot be asked to stop.
+            Get("shutdown", TimeSpan.FromSeconds(3));
             if (owned is { HasExited: false } && !owned.WaitForExit(10_000)) owned.Kill(entireProcessTree: true);
             owned?.Dispose();
             // A server left behind by a killed watcher has no handle here; wait for it to release the port.
@@ -54,29 +49,29 @@ namespace SessionMemory
         public static string? Search(string root, string index, string query, int topK)
         {
             if (!string.Equals(IndexesDirectory(), Path.Combine(root, ".leann", "indexes"), StringComparison.OrdinalIgnoreCase)) return null;
-            try
-            {
-                var url = $"search?index={Uri.EscapeDataString(index)}&query={Uri.EscapeDataString(query)}" +
-                          $"&top_k={topK.ToString(CultureInfo.InvariantCulture)}&dedup_threshold=0&show_metadata=true&format=json";
-                var json = Client.GetStringAsync(url).GetAwaiter().GetResult();
-                return JsonNode.Parse(json)?["results"] is JsonArray ? json : null;
-            }
-            catch (Exception error) when (error is HttpRequestException or TaskCanceledException or JsonException)
-            {
-                return null;
-            }
+            var url = $"search?index={Uri.EscapeDataString(index)}&query={Uri.EscapeDataString(query)}" +
+                      $"&top_k={topK.ToString(CultureInfo.InvariantCulture)}&dedup_threshold=0&show_metadata=true&format=json";
+            return Get(url, Client.Timeout)
+                .Bind(json => Attempt.Json(() => JsonNode.Parse(json)?["results"] is JsonArray ? json : null))
+                .GetValueOrDefault();
         }
 
-        private static string? IndexesDirectory()
+        private static string? IndexesDirectory() =>
+            Get("health", TimeSpan.FromSeconds(2))
+                .Bind(json => Attempt.Json(() => JsonNode.Parse(json)?["indexesDir"].AsString()))
+                .GetValueOrDefault();
+
+        // The one network edge: a server that is down, failing or too slow becomes a failure instead of an exception.
+        private static Result<string, string> Get(string url, TimeSpan timeout)
         {
             try
             {
-                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-                return JsonNode.Parse(Client.GetStringAsync("health", timeout.Token).GetAwaiter().GetResult())?["indexesDir"].AsString();
+                using var cancel = new CancellationTokenSource(timeout);
+                return Result.Success<string, string>(Client.GetStringAsync(url, cancel.Token).GetAwaiter().GetResult());
             }
-            catch (Exception error) when (error is HttpRequestException or TaskCanceledException or JsonException)
+            catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
             {
-                return null;
+                return Result.Failure<string, string>(Attempt.Describe(error));
             }
         }
     }

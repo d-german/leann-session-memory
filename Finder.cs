@@ -1,13 +1,42 @@
 ﻿using System.Diagnostics;
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using CSharpFunctionalExtensions;
 
 namespace SessionMemory
 {
+    /// <summary>
+    /// What to find. Only names a session ID or prefix whose excerpts are all listed; Since keeps records at or after that time;
+    /// Outputs adds Copilot CLI tool results to what is searched.
+    /// </summary>
+    sealed internal record FindRequest
+    {
+        public required string Root { get; init; }
+
+        public required string Home { get; init; }
+
+        public required ImmutableArray<string> Terms { get; init; }
+
+        public int Top { get; init; } = 8;
+
+        public bool Json { get; init; }
+
+        public string? Only { get; init; }
+
+        public bool Partial { get; init; }
+
+        public bool IncludeCurrent { get; init; }
+
+        public DateTimeOffset? Since { get; init; }
+
+        public bool Outputs { get; init; }
+    }
+
     /// <summary>
     /// Exact-term search over the raw stores. Unlike the semantic index it also covers tool inputs such as edits,
     /// commands and page updates, whose full text would nearly triple the index. Tool outputs stay out as noise unless asked for.
@@ -20,19 +49,19 @@ namespace SessionMemory
         private const int WindowChars = 300;
 
         // With a session ID (or prefix), lists every matching excerpt in that session instead of one per session.
-        // since keeps only records at or after that time; outputs adds Copilot CLI tool results to what is searched.
-        public static int Run(string root, string home, IReadOnlyList<string> terms, int top, bool json, string? only = null, bool partial = false, bool includeCurrent = false,
-            DateTimeOffset? since = null, bool outputs = false)
+        public static int Run(FindRequest request)
         {
             var stopwatch = Stopwatch.StartNew();
-            var manifest = Store.Load<Manifest>(Path.Combine(root, "state", "manifest.json"));
+            // find --top 3 names no terms; a request built without any behaves the same.
+            var terms = request.Terms.IsDefaultOrEmpty ? [] : request.Terms;
+            var manifest = Store.Load<Manifest>(Path.Combine(request.Root, "state", "manifest.json"));
             var documents = manifest?.Documents ?? [];
-            var work = WorkItems(home, documents, outputs);
+            var work = WorkItems(request.Home, documents, request.Outputs);
             // Load balancing hands files out one at a time, so a few large logs don't pile up on one core.
-            var found = new Dictionary<(string Client, string SessionId), Found>();
+            var found = new Dictionary<SessionKey, Found>();
             var scans = Partitioner.Create(work, loadBalance: true).AsParallel().Select(item =>
             {
-                var scan = new Scan(terms, only, partial, since);
+                var scan = new Scan(terms, request.Only, request.Partial, request.Since);
                 item(scan);
                 return scan;
             });
@@ -40,16 +69,16 @@ namespace SessionMemory
 
             var byId = documents.GroupBy(pair => pair.Value.SessionId).ToDictionary(group => group.Key, group => group.First());
             // Naming a session with --session asks for it, even when it is the current one.
-            var exclusions = Corpus.SearchExclusions(root, includeCurrent || only is not null);
+            var exclusions = Corpus.SearchExclusions(request.Root, request.IncludeCurrent || request.Only is not null);
             var sessions = found
                 .Where(pair => pair.Value.Mentions.All(count => count > 0) && !Corpus.IsExcluded(pair.Key.SessionId, exclusions))
                 .OrderByDescending(pair => pair.Value.LastAllTerms, StringComparer.Ordinal)
                 .ThenByDescending(pair => pair.Value.LastMention, StringComparer.Ordinal)
                 .ToList();
-            var listed = sessions.Take(only is null ? top : 20).ToList();
-            var after = since is { } time ? Utc(time) : null;
-            if (json) WriteJson(root, terms, top, only, after, sessions.Count, listed, byId, stopwatch);
-            else WriteText(terms, top, only, after, sessions.Count, listed, byId);
+            var listed = sessions.Take(request.Only is null ? request.Top : 20).ToList();
+            var after = request.Since is { } time ? Utc(time) : null;
+            if (request.Json) WriteJson(request, terms, after, sessions.Count, listed, byId, stopwatch);
+            else WriteText(request, terms, after, sessions.Count, listed, byId);
             return 0;
         }
 
@@ -79,50 +108,51 @@ namespace SessionMemory
             return work;
         }
 
-        private static void WriteText(IReadOnlyList<string> terms, int top, string? only, string? since, int matching,
-            List<KeyValuePair<(string Client, string SessionId), Found>> listed, Dictionary<string, KeyValuePair<string, DocumentMeta>> byId)
+        private static void WriteText(FindRequest request, ImmutableArray<string> terms, string? since, int matching,
+            List<KeyValuePair<SessionKey, Found>> listed, Dictionary<string, KeyValuePair<string, DocumentMeta>> byId)
         {
             var window = since is null ? "" : $" since {since.Replace('T', ' ')} UTC";
-            var text = new StringBuilder(only is null
+            var text = new StringBuilder(request.Only is null
                 ? $"{matching} sessions contain all of: {string.Join(", ", terms)}{window}. Newest first; showing {listed.Count}.\n"
-                : $"{matching} sessions starting with {only} contain all of: {string.Join(", ", terms)}{window}. Excerpts newest first, up to {top} each.\n");
-            foreach (var ((client, sessionId), session) in listed)
+                : $"{matching} sessions starting with {request.Only} contain all of: {string.Join(", ", terms)}{window}. Excerpts newest first, up to {request.Top} each.\n");
+            foreach (var (key, session) in listed)
             {
-                var indexed = byId.TryGetValue(sessionId, out var document);
+                var document = byId.TryFind(key.SessionId);
                 var mentions = string.Join(", ", terms.Select((term, index) => $"{term} {session.Mentions[index]}"));
                 var newest = session.LastAllTerms.Length > 0 ? $"all terms last {Compact.Time(session.LastAllTerms)}" : "";
-                text.Append(Compact.SessionLine(sessionId, indexed ? document.Value.Client : client, newest, mentions, indexed ? document.Value.Title : "")).Append('\n');
-                foreach (var snippet in Shown(session, only, top)) text.Append($"  [{Compact.Time(snippet.At)} {snippet.Where}] {snippet.Text}\n");
+                text.Append(Compact.SessionLine(key.SessionId, document.Match((_, meta) => meta.Client, () => key.Client), newest, mentions,
+                    document.Match((_, meta) => meta.Title, () => ""))).Append('\n');
+                foreach (var snippet in Shown(session, request.Only, request.Top)) text.Append($"  [{Compact.Time(snippet.At)} {snippet.Where}] {snippet.Text}\n");
             }
             Compact.Write(Compact.Plain(text.ToString()));
         }
 
-        private static void WriteJson(string root, IReadOnlyList<string> terms, int top, string? only, string? since, int matching,
-            List<KeyValuePair<(string Client, string SessionId), Found>> listed, Dictionary<string, KeyValuePair<string, DocumentMeta>> byId, Stopwatch stopwatch)
+        private static void WriteJson(FindRequest request, ImmutableArray<string> terms, string? since, int matching,
+            List<KeyValuePair<SessionKey, Found>> listed, Dictionary<string, KeyValuePair<string, DocumentMeta>> byId, Stopwatch stopwatch)
         {
             var results = new JsonArray();
-            foreach (var ((client, sessionId), session) in listed)
+            foreach (var (key, session) in listed)
             {
-                var indexed = byId.TryGetValue(sessionId, out var document);
+                var document = byId.TryFind(key.SessionId);
                 var mentions = new JsonObject();
-                for (var index = 0; index < terms.Count; index++) mentions[terms[index]] = session.Mentions[index];
+                for (var index = 0; index < terms.Length; index++) mentions[terms[index]] = session.Mentions[index];
                 results.Add(new JsonObject
                 {
-                    ["client"] = indexed ? document.Value.Client : client,
-                    ["session_id"] = sessionId,
-                    ["title"] = indexed ? document.Value.Title : "",
+                    ["client"] = document.Match((_, meta) => meta.Client, () => key.Client),
+                    ["session_id"] = key.SessionId,
+                    ["title"] = document.Match((_, meta) => meta.Title, () => ""),
                     ["last_all_terms"] = session.LastAllTerms,
                     ["last_mention"] = session.LastMention,
                     ["mentions"] = mentions,
                     ["snippets"] = new JsonArray([
-                        .. Shown(session, only, top).Select(JsonNode (snippet) => new JsonObject
+                        .. Shown(session, request.Only, request.Top).Select(JsonNode (snippet) => new JsonObject
                         {
                             ["at"] = snippet.At,
                             ["where"] = snippet.Where,
                             ["text"] = snippet.Text
                         })
                     ]),
-                    ["transcript"] = indexed ? Path.Combine(root, "corpus", document.Key) : null
+                    ["transcript"] = document.Map(pair => Path.Combine(request.Root, "corpus", pair.Key)).GetValueOrDefault()
                 });
             }
             var response = new JsonObject
@@ -166,7 +196,7 @@ namespace SessionMemory
 
         // The string value holding the most terms, cut to a window where they sit closest together, labelled by its JSON path.
         // A "name", "toolName" or "tool" property labels its object, so a path reads like "Write.input.content".
-        public static Snippet? Excerpt(JsonElement element, string label, IReadOnlyList<string> terms)
+        public static Snippet? Excerpt(JsonElement element, string label, ImmutableArray<string> terms)
         {
             Snippet? best = null;
             var bestCount = 0;
@@ -199,12 +229,23 @@ namespace SessionMemory
 
             void Consider(string value, string path)
             {
-                var count = terms.Count(term => value.Contains(term, StringComparison.OrdinalIgnoreCase));
+                var count = CountContained(value, terms);
                 if (count <= bestCount) return;
                 bestCount = count;
                 var (text, score) = Window(value, terms);
                 best = new Snippet("", path, text, score);
             }
+        }
+
+        // How many of the terms occur anywhere in the value, ignoring case.
+        private static int CountContained(string value, ImmutableArray<string> terms)
+        {
+            var count = 0;
+            foreach (var term in terms.AsSpan())
+            {
+                if (value.Contains(term, StringComparison.OrdinalIgnoreCase)) count++;
+            }
+            return count;
         }
 
         // When several of these string properties are present, the last one wins.
@@ -222,11 +263,11 @@ namespace SessionMemory
 
         // Centred on the tightest cluster of terms around an occurrence of the rarest term, which says more than a common
         // one such as "threat". The score is how many terms the window shows.
-        private static (string Text, int Score) Window(string value, IReadOnlyList<string> terms)
+        private static (string Text, int Score) Window(string value, ImmutableArray<string> terms)
         {
-            var present = terms.Where(term => value.Contains(term, StringComparison.OrdinalIgnoreCase)).ToList();
+            ImmutableArray<string> present = [.. terms.Where(term => value.Contains(term, StringComparison.OrdinalIgnoreCase))];
             var center = 0;
-            if (present.Count > 0)
+            if (present.Length > 0)
             {
                 var rarest = present.MinBy(term => Occurrences(value, term).Take(1000).Count())!;
                 center = Occurrences(value, rarest).Take(20).Select(at => Cluster(value, at, rarest, present)).MaxBy(cluster => cluster.Score).Center;
@@ -235,7 +276,7 @@ namespace SessionMemory
             var end = Math.Min(value.Length, start + WindowChars);
             var shown = value[start..end];
             var text = (start > 0 ? "..." : "") + Whitespace().Replace(shown, " ").Trim() + (end < value.Length ? "..." : "");
-            return (text, present.Count(term => shown.Contains(term, StringComparison.OrdinalIgnoreCase)));
+            return (text, CountContained(shown, present));
         }
 
         private static IEnumerable<int> Occurrences(string value, string term)
@@ -245,7 +286,7 @@ namespace SessionMemory
         }
 
         // Adds the nearest occurrence of each other term while the span still fits in one window.
-        private static (int Score, int Center) Cluster(string value, int at, string rarest, IReadOnlyList<string> present)
+        private static (int Score, int Center) Cluster(string value, int at, string rarest, ImmutableArray<string> present)
         {
             var (low, high, score) = (at, at + rarest.Length, 1);
             foreach (var term in present.Where(term => term != rarest))
@@ -316,25 +357,28 @@ namespace SessionMemory
         // One file's results, merged into the shared set on the calling thread.
         sealed internal class Scan
         {
-            private readonly Dictionary<(string Client, string SessionId), Found> _found = [];
-            private readonly string[][] _forms;
+            private readonly Dictionary<SessionKey, Found> _found = [];
+            private readonly ImmutableArray<ImmutableArray<string>> _forms;
+            // Which terms the record being noted holds, reused so that noting a record allocates nothing.
+            private readonly bool[] _present;
             private readonly string? _only;
             private readonly bool _partial;
             private readonly string? _since;
 
-            public Scan(IReadOnlyList<string> terms, string? only = null, bool partial = false, DateTimeOffset? since = null)
+            public Scan(ImmutableArray<string> terms, string? only = null, bool partial = false, DateTimeOffset? since = null)
             {
-                Terms = terms;
-                _forms = [.. terms.Select(Forms)];
+                Terms = terms.IsDefault ? [] : terms;
+                _forms = [.. Terms.Select(Forms)];
+                _present = new bool[Terms.Length];
                 _only = only;
                 _partial = partial;
                 _since = since is { } time ? Utc(time) : null;
             }
 
-            public IReadOnlyList<string> Terms { get; }
+            public ImmutableArray<string> Terms { get; }
 
             // Raw JSON escapes backslashes and quotes, so a term such as a Windows path is also looked for in that form.
-            public static string[] Forms(string term) =>
+            public static ImmutableArray<string> Forms(string term) =>
             [
                 .. new[]
                 {
@@ -343,10 +387,23 @@ namespace SessionMemory
             ];
 
             // A cheap substring prefilter; Note applies whole-word matching and self-invocation filtering.
-            public bool Mentions(string text) => _forms.Any(term => Has(text, term, true));
+            public bool Mentions(string text)
+            {
+                foreach (var term in _forms.AsSpan())
+                {
+                    if (Has(text, term, true)) return true;
+                }
+                return false;
+            }
 
-            private static bool Has(string text, string[] term, bool partial) =>
-                term.Any(form => partial ? text.Contains(form, StringComparison.OrdinalIgnoreCase) : HasWord(text, form));
+            private static bool Has(string text, ImmutableArray<string> term, bool partial)
+            {
+                foreach (var form in term.AsSpan())
+                {
+                    if (partial ? text.Contains(form, StringComparison.OrdinalIgnoreCase) : HasWord(text, form)) return true;
+                }
+                return false;
+            }
 
             // An occurrence counts only if an alphanumeric edge of the term is not continued by a word character.
             public static bool HasWord(string text, string term)
@@ -384,7 +441,16 @@ namespace SessionMemory
                 text.Contains("SessionMemory", StringComparison.OrdinalIgnoreCase)
                 && (SelfInvocation().IsMatch(text) || ToolFile().IsMatch(text) && IndirectInvocation().IsMatch(text));
 
-            public bool Matches(string text) => !IsSelfInvocation(text) && _forms.All(term => Has(text, term, _partial));
+            public bool Matches(string text) => !IsSelfInvocation(text) && HasAll(text);
+
+            private bool HasAll(string text)
+            {
+                foreach (var term in _forms.AsSpan())
+                {
+                    if (!Has(text, term, _partial)) return false;
+                }
+                return true;
+            }
 
             // The snippet is built only for the newest records holding every term, since walking JSON costs more than matching.
             public void Note(string client, string sessionId, string text, string timestamp, Func<Snippet?> snippet)
@@ -393,18 +459,33 @@ namespace SessionMemory
                 // Timestamps share one UTC format, so they compare as text; one that could not be parsed is empty and comes first.
                 if (_since is not null && string.CompareOrdinal(timestamp, _since) < 0) return;
                 if (IsSelfInvocation(text)) return;
-                var present = _forms.Select(term => Has(text, term, _partial)).ToArray();
-                if (!present.Any(hit => hit)) return;
-                var session = Tally(client, sessionId, timestamp, present);
-                if (!present.All(hit => hit)) return;
+                var (any, all) = Presence(text);
+                if (!any) return;
+                var session = Tally(client, sessionId, timestamp);
+                if (!all) return;
                 if (string.CompareOrdinal(timestamp, session.LastAllTerms) > 0) session.LastAllTerms = timestamp;
                 KeepSnippet(session, timestamp, snippet);
             }
 
-            private Found Tally(string client, string sessionId, string timestamp, bool[] present)
+            // Fills _present and tells whether the text holds any and all of the terms.
+            private (bool Any, bool All) Presence(string text)
             {
-                if (!_found.TryGetValue((client, sessionId), out var session)) _found[(client, sessionId)] = session = new Found(Terms.Count);
-                for (var index = 0; index < present.Length; index++) session.Mentions[index] += present[index] ? 1 : 0;
+                var any = false;
+                var all = true;
+                for (var index = 0; index < _forms.Length; index++)
+                {
+                    _present[index] = Has(text, _forms[index], _partial);
+                    any |= _present[index];
+                    all &= _present[index];
+                }
+                return (any, all);
+            }
+
+            private Found Tally(string client, string sessionId, string timestamp)
+            {
+                var key = new SessionKey(client, sessionId);
+                if (!_found.TryGetValue(key, out var session)) _found[key] = session = new Found(Terms.Length);
+                for (var index = 0; index < _present.Length; index++) session.Mentions[index] += _present[index] ? 1 : 0;
                 if (string.CompareOrdinal(timestamp, session.LastMention) > 0) session.LastMention = timestamp;
                 return session;
             }
@@ -420,7 +501,7 @@ namespace SessionMemory
                         });
                     return;
                 }
-                if (session.Best is { } best && best.Score == Terms.Count && string.CompareOrdinal(timestamp, best.At) <= 0) return;
+                if (session.Best is { } best && best.Score == Terms.Length && string.CompareOrdinal(timestamp, best.At) <= 0) return;
                 if (snippet() is { } excerpt)
                     session.Offer(excerpt with
                     {
@@ -428,9 +509,9 @@ namespace SessionMemory
                     });
             }
 
-            public IReadOnlyDictionary<(string Client, string SessionId), Found> Sessions => _found;
+            public IReadOnlyDictionary<SessionKey, Found> Sessions => _found;
 
-            public void MergeInto(Dictionary<(string Client, string SessionId), Found> target)
+            public void MergeInto(Dictionary<SessionKey, Found> target)
             {
                 foreach (var (key, session) in _found)
                 {
@@ -438,6 +519,20 @@ namespace SessionMemory
                     else target[key] = session;
                 }
             }
+        }
+
+        // A session as one client names it; it keys the results, so it compares by value.
+        internal readonly record struct SessionKey
+        {
+            public SessionKey(string client, string sessionId)
+            {
+                Client = client;
+                SessionId = sessionId;
+            }
+
+            public string Client { get; init; }
+
+            public string SessionId { get; init; }
         }
 
         public sealed record Snippet(string At, string Where, string Text, int Score);
@@ -459,7 +554,7 @@ namespace SessionMemory
         }
 
         // Parses its own document, so the deferred excerpt never depends on one disposed by the scanning loop.
-        private static Snippet? ClaudeExcerpt(string line, IReadOnlyList<string> terms)
+        private static Snippet? ClaudeExcerpt(string line, ImmutableArray<string> terms)
         {
             using var json = Jsonl.Parse(line);
             return json is null ? null : Excerpt(json.RootElement.TryGetProperty("message", out var message) ? message : json.RootElement, "", terms);
@@ -509,7 +604,7 @@ namespace SessionMemory
         }
 
         // A result carries no tool name, and a nested "name" would relabel its path, so the label goes in front.
-        private static Snippet? OutputExcerpt(JsonElement output, string label, IReadOnlyList<string> terms) =>
+        private static Snippet? OutputExcerpt(JsonElement output, string label, ImmutableArray<string> terms) =>
             Excerpt(output, "", terms) is { } excerpt
                 ? excerpt with
                 {
@@ -527,7 +622,7 @@ namespace SessionMemory
         private static void ScanCodex(Scan scan, string history, long from, long to)
         {
             using var database = new SqliteReader(history);
-            var filter = string.Join(" OR ", scan.Terms.SelectMany(Scan.Forms).Select(term => $"item_json LIKE '%{LikeEscape(term)}%' ESCAPE '\\'"));
+            var filter = string.Join(" OR ", scan.Terms.SelectMany(term => Scan.Forms(term)).Select(term => $"item_json LIKE '%{LikeEscape(term)}%' ESCAPE '\\'"));
             var query = $"SELECT thread_id, item_type, created_at_ms, item_json FROM thread_items WHERE rowid BETWEEN {from} AND {to} AND item_type IN " +
                         $"('userMessage','agentMessage','commandExecution','mcpToolCall','fileChange','webSearch') AND ({filter})";
             foreach (var row in database.Query(query))

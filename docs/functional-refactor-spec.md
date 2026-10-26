@@ -1,8 +1,19 @@
 # Functional Refactor Specification: SessionMemory
 
-Status: **proposed, audit complete, no implementation started.**
-Baseline: commit `b7339e8` on `main` (pushed). Line numbers below are approximate for that commit; search by symbol name.
+Status: **implemented** (WP0-WP6 and most of WP7) on 2026-10-26, in the commit after `b549afd`. The current-session features
+(`--current`, `--since`, `--outputs`, Codex/Claude session detection) landed first in `b549afd`.
+Baseline for the audit: commit `b7339e8`. Line numbers below are approximate for that commit; search by symbol name.
 Source: six-worker read-only audits run on 2026-10-26 (Result/railway audit, records/ImmutableArray audit).
+
+Decisions taken: D1-D3, D5 and D6 used the recommended defaults. D4: converted and new records use explicit constructors or init-only
+properties, never positional syntax (the pre-existing positional `Segment` and `Snippet` records were left as they were).
+Verification at completion: Rider build clean, self-test passing (with per-area `SelfTest.*.cs` checks), zero actionable Rider findings,
+1220 of 1222 real-data documents byte-identical to the pre-refactor capture (the other two were sessions still being written),
+identical family stats and manifest key order, CLI probe outputs identical except the D2 message, and the replay characterization
+checks passing on both the old and the new code. Production code went from 26 catch blocks to 10 (all boundary adapters or kept
+policies) and from 22 throw statements to 5.
+Not done from WP7: the optional `CliOptions` parser and named record structs for the `Query`/`RunLeann` tuples where they were not
+needed (`RunLeann` now returns a `LeannOutput` record).
 
 This document is self-contained. A new session should be able to pick a work package (WP), implement it, verify it and stop,
 without re-running the audits.

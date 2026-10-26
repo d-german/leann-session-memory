@@ -5,10 +5,11 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using CSharpFunctionalExtensions;
 
 namespace SessionMemory
 {
-    sealed internal class DocumentMeta
+    sealed internal record DocumentMeta
     {
         public string Family { get; init; } = "";
 
@@ -30,39 +31,41 @@ namespace SessionMemory
         public string Title { get; init; } = "";
     }
 
-    sealed internal class FamilyReport
+    // Loaded from the manifest, so every property has an initializer: a field missing from the file is never null.
+    sealed internal record FamilyReport
     {
-        public bool Ok { get; set; } = true;
+        public bool Ok { get; init; } = true;
 
-        public string Error { get; set; } = "";
+        public string Error { get; init; } = "";
 
-        public string? Fingerprint { get; set; }
+        public string? Fingerprint { get; init; }
 
-        public Dictionary<string, long> Stats { get; set; } = [];
+        public Dictionary<string, long> Stats { get; init; } = [];
     }
 
-    sealed internal class Manifest
+    // Dictionaries keep insertion order, so the manifest's keys stay in the order they were written.
+    sealed internal record Manifest
     {
-        public int Version { get; set; }
+        public int Version { get; init; }
 
-        public string GeneratedAt { get; set; } = "";
+        public string GeneratedAt { get; init; } = "";
 
-        public string CorpusHash { get; set; } = "";
+        public string CorpusHash { get; init; } = "";
 
-        public Dictionary<string, DocumentMeta> Documents { get; set; } = [];
+        public Dictionary<string, DocumentMeta> Documents { get; init; } = [];
 
-        public Dictionary<string, FamilyReport> Families { get; set; } = [];
+        public Dictionary<string, FamilyReport> Families { get; init; } = [];
 
-        public int DocumentCount { get; set; }
+        public int DocumentCount { get; init; }
 
-        public long MessageCount { get; set; }
+        public long MessageCount { get; init; }
 
-        public long Bytes { get; set; }
+        public long Bytes { get; init; }
     }
 
-    sealed internal class CaptureReport
+    sealed internal record CaptureReport
     {
-        public CaptureReport(bool changed, Manifest manifest, double durationSeconds, IReadOnlyList<string> reparsed)
+        public CaptureReport(bool changed, Manifest manifest, double durationSeconds, ImmutableArray<string> reparsed)
         {
             Changed = changed;
             Manifest = manifest;
@@ -70,13 +73,13 @@ namespace SessionMemory
             Reparsed = reparsed;
         }
 
-        public bool Changed { get; }
+        public bool Changed { get; init; }
 
-        public Manifest Manifest { get; }
+        public Manifest Manifest { get; init; }
 
-        public double DurationSeconds { get; }
+        public double DurationSeconds { get; init; }
 
-        public IReadOnlyList<string> Reparsed { get; }
+        public ImmutableArray<string> Reparsed { get; init; }
     }
 
     /// <summary>Turns transcripts into the Markdown corpus LEANN indexes, rewriting only documents that changed.</summary>
@@ -89,7 +92,7 @@ namespace SessionMemory
         public static readonly ImmutableArray<string> CurrentSessionVariables = ["COPILOT_AGENT_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID"];
         private static readonly UTF8Encoding NoBom = new(false);
 
-        public static CaptureReport Capture(string root, IReadOnlyList<Family> families)
+        public static CaptureReport Capture(string root, ImmutableArray<Family> families)
         {
             var stopwatch = Stopwatch.StartNew();
             var corpus = Path.Combine(root, "corpus");
@@ -99,11 +102,11 @@ namespace SessionMemory
             var contents = new Dictionary<string, string>();
             var reports = new Dictionary<string, FamilyReport>();
             var reparsed = new List<string>();
-            var exclusions = LoadExclusions(root);
+            ImmutableArray<string> exclusions = [.. LoadExclusions(root)];
             foreach (var family in families)
             {
                 var fingerprint = Fingerprint(family.Sources(), exclusions);
-                if (previous.Version == ManifestVersion && previous.Families.TryGetValue(family.Name, out var known) && known.Ok && known.Fingerprint == fingerprint)
+                if (Unchanged(previous, family.Name, fingerprint).TryGetValue(out var known))
                 {
                     reports[family.Name] = known;
                     continue;
@@ -130,32 +133,35 @@ namespace SessionMemory
             };
             var changed = manifest.CorpusHash != previous.CorpusHash;
             if (changed || reparsed.Count > 0 || previous.Version != ManifestVersion) Store.Save(manifestPath, manifest);
-            return new CaptureReport(changed, manifest, Math.Round(stopwatch.Elapsed.TotalSeconds, 3), reparsed);
+            return new CaptureReport(changed, manifest, Math.Round(stopwatch.Elapsed.TotalSeconds, 3), [.. reparsed]);
         }
 
+        // A family parsed successfully from the same sources and exclusions keeps its report and documents.
+        private static Maybe<FamilyReport> Unchanged(Manifest previous, string name, string fingerprint) =>
+            previous.Version == ManifestVersion
+                ? previous.Families.TryFind(name).Where(known => known.Ok && known.Fingerprint == fingerprint)
+                : Maybe<FamilyReport>.None;
+
         // Documents rendered before a parse fails stay in the corpus, so they are added as they render.
-        private static FamilyReport ParseFamily(Family family, string fingerprint, Dictionary<string, DocumentMeta> documents, Dictionary<string, string> contents)
-        {
-            try
-            {
-                var result = family.Parse();
-                var report = new FamilyReport
+        // Any failure, including one while rendering, fails the family with the "{Type}: {Message}" text the manifest persists.
+        private static FamilyReport ParseFamily(Family family, string fingerprint, Dictionary<string, DocumentMeta> documents, Dictionary<string, string> contents) =>
+            Result.Try(() =>
                 {
-                    Fingerprint = fingerprint,
-                    Stats = result.Stats
-                };
-                foreach (var document in result.Documents) AddDocument(document, documents, contents);
-                return report;
-            }
-            catch (Exception error)
-            {
-                return new FamilyReport
-                {
-                    Ok = false,
-                    Error = $"{error.GetType().Name}: {error.Message}"
-                };
-            }
-        }
+                    var result = family.Parse();
+                    foreach (var document in result.Documents) AddDocument(document, documents, contents);
+                    return result.Stats;
+                }, Attempt.Describe)
+                .Match(
+                    stats => new FamilyReport
+                    {
+                        Fingerprint = fingerprint,
+                        Stats = stats
+                    },
+                    error => new FamilyReport
+                    {
+                        Ok = false,
+                        Error = error
+                    });
 
         private static void AddDocument(Document document, Dictionary<string, DocumentMeta> documents, Dictionary<string, string> contents)
         {
@@ -188,7 +194,7 @@ namespace SessionMemory
             }
         }
 
-        private static void RemoveExcluded(IReadOnlyCollection<string> exclusions, Dictionary<string, DocumentMeta> documents, Dictionary<string, string> contents)
+        private static void RemoveExcluded(ImmutableArray<string> exclusions, Dictionary<string, DocumentMeta> documents, Dictionary<string, string> contents)
         {
             foreach (var name in documents.Where(pair => IsExcluded(pair.Value.SessionId, exclusions)).Select(pair => pair.Key).ToList())
             {
@@ -229,19 +235,19 @@ namespace SessionMemory
 
         // The session running a search only echoes the question, so searches leave it out unless asked not to.
         // The ID is matched like any exclusion, so a short value must not drop unrelated sessions.
-        public static List<string> SearchExclusions(string root, bool includeCurrent, string? currentSession = null)
+        public static ImmutableArray<string> SearchExclusions(string root, bool includeCurrent, string? currentSession = null)
         {
             var exclusions = LoadExclusions(root);
             currentSession ??= CurrentSession();
             if (!includeCurrent && currentSession?.Trim() is { Length: >= MinimumSessionIdLength } id) exclusions.Add(id);
-            return exclusions;
+            return [.. exclusions];
         }
 
         // A prefix also covers Claude subagent sessions, whose IDs start with the parent's.
-        public static bool IsExcluded(string sessionId, IReadOnlyCollection<string> exclusions) =>
+        public static bool IsExcluded(string sessionId, ImmutableArray<string> exclusions) =>
             exclusions.Any(prefix => sessionId.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
 
-        private static string Fingerprint(IEnumerable<string> files, IEnumerable<string> exclusions)
+        private static string Fingerprint(ImmutableArray<string> files, ImmutableArray<string> exclusions)
         {
             // The build id makes a new parser re-read every family once; the exclusions make an included session come back.
             var builder = new StringBuilder().Append(typeof(Corpus).Assembly.ManifestModule.ModuleVersionId).Append('\n');
@@ -275,31 +281,12 @@ namespace SessionMemory
             WriteIndented = true
         };
 
-        public static T? Load<T>(string path) where T : class
-        {
-            try
-            {
-                using var stream = OpenShared(path);
-                return JsonSerializer.Deserialize<T>(stream, Options);
-            }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
-            {
-                return null;
-            }
-        }
+        // A missing, locked or corrupt state file reads as absent; callers fall back to their defaults.
+        public static T? Load<T>(string path) where T : class =>
+            ReadJson(path, stream => JsonSerializer.Deserialize<T>(stream, Options)).GetValueOrDefault();
 
-        public static JsonNode? LoadNode(string path)
-        {
-            try
-            {
-                using var stream = OpenShared(path);
-                return JsonNode.Parse(stream);
-            }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
-            {
-                return null;
-            }
-        }
+        public static JsonNode? LoadNode(string path) =>
+            ReadJson(path, stream => JsonNode.Parse(stream)).GetValueOrDefault();
 
         public static void Save<T>(string path, T value)
         {
@@ -329,5 +316,13 @@ namespace SessionMemory
 
         // Allowing delete lets the watcher replace a file while a search is reading it.
         private static FileStream OpenShared(string path) => new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+
+        // The one edge for reading state: only I/O, access and JSON errors become a failure, so programming errors still surface.
+        private static Result<T, string> ReadJson<T>(string path, Func<Stream, T> read) =>
+            Attempt.Io(() => Attempt.Json(() =>
+            {
+                using var stream = OpenShared(path);
+                return read(stream);
+            })).Bind(parsed => parsed);
     }
 }

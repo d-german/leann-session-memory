@@ -1,5 +1,7 @@
-﻿using System.Diagnostics;
+﻿using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Globalization;
+using CSharpFunctionalExtensions;
 
 namespace SessionMemory
 {
@@ -16,8 +18,9 @@ namespace SessionMemory
         private const long ArchiveAfterRecentBytes = 4_000_000;
 
         private readonly string _root;
-        private readonly IReadOnlyList<Family> _families;
-        private readonly Dictionary<string, Task<(TierState? State, Exception? Error)>> _running = [];
+        private readonly ImmutableArray<Family> _families;
+        // A build task never faults: its failure is the "{ExceptionType}: {Message}" text, so Task.WhenAll waits for every build.
+        private readonly Dictionary<string, Task<Result<TierState, string>>> _running = [];
         private readonly Dictionary<string, DateTime> _failedAt = [];
         private readonly Dictionary<string, string> _errors = [];
         private DateTime _lastChange = DateTime.MinValue;
@@ -25,7 +28,7 @@ namespace SessionMemory
         private string? _corpusHash;
         private Process? _server;
 
-        public Watcher(string root, IReadOnlyList<Family> families)
+        public Watcher(string root, ImmutableArray<Family> families)
         {
             _root = root;
             _families = families;
@@ -48,19 +51,15 @@ namespace SessionMemory
             }
         }
 
-        private bool TryCycle(bool once, bool force)
+        // The outermost boundary: any failure of a cycle is recorded and the next cycle tries again.
+        private bool TryCycle(bool once, bool force) =>
+            Result.Try(() => Cycle(once, force), Attempt.Describe).Match(() => true, CycleFailed);
+
+        private bool CycleFailed(string error)
         {
-            try
-            {
-                Cycle(once, force);
-                return true;
-            }
-            catch (Exception error)
-            {
-                _errors["capture"] = $"{error.GetType().Name}: {error.Message}";
-                Log($"cycle failed: {_errors["capture"]}");
-                return false;
-            }
+            _errors["capture"] = error;
+            Log($"cycle failed: {error}");
+            return false;
         }
 
         private Task WaitForWorkAsync(bool once)
@@ -139,34 +138,33 @@ namespace SessionMemory
         private void Start(StagedBuild staged)
         {
             Log($"{staged.Tier} build started: {staged.Documents.Count} documents");
-            _running[staged.Tier] = Task.Run(() =>
-            {
-                try
-                {
-                    return ((TierState?)Indexer.Build(_root, staged), null);
-                }
-                catch (Exception error)
-                {
-                    return ((TierState?)null, (Exception?)error);
-                }
-            });
+            _running[staged.Tier] = Task.Run(() => Build(staged));
         }
 
-        private void RestartServer()
+        // A build that throws is recorded like one that fails.
+        private Result<TierState, string> Build(StagedBuild staged) =>
+            Result.Try(() => Indexer.Build(_root, staged), Attempt.Describe).Match(built => built, Result.Failure<TierState, string>);
+
+        private void RestartServer() =>
+            Result.Try(() =>
+                {
+                    SearchServer.Stop(_server);
+                    return SearchServer.Start(_root);
+                }, Attempt.Describe)
+                .Match(ServerStarted, ServerFailed);
+
+        private void ServerStarted(Process? server)
         {
-            try
-            {
-                SearchServer.Stop(_server);
-                _server = SearchServer.Start(_root);
-                _errors.Remove("search_server");
-                Log($"search server started, process {_server?.Id}");
-            }
-            catch (Exception error)
-            {
-                _server = null;
-                _errors["search_server"] = $"{error.GetType().Name}: {error.Message}";
-                Log($"search server failed: {_errors["search_server"]}");
-            }
+            _server = server;
+            _errors.Remove("search_server");
+            Log($"search server started, process {server?.Id}");
+        }
+
+        private void ServerFailed(string error)
+        {
+            _server = null;
+            _errors["search_server"] = error;
+            Log($"search server failed: {error}");
         }
 
         private bool Collect()
@@ -175,23 +173,26 @@ namespace SessionMemory
             foreach (var (tier, task) in _running.Where(pair => pair.Value.IsCompleted).ToList())
             {
                 _running.Remove(tier);
-                var (state, error) = task.Result;
-                if (state is not null)
-                {
-                    Store.Save(Indexer.StatePath(_root, tier), state);
-                    _failedAt.Remove(tier);
-                    _errors.Remove(tier);
-                    published = true;
-                    Log($"{tier} build published in {state.DurationSeconds:0.#} s: {state.Documents.Count} documents");
-                }
-                else
-                {
-                    _failedAt[tier] = DateTime.UtcNow;
-                    _errors[tier] = $"{error!.GetType().Name}: {error.Message}";
-                    Log($"{tier} build failed: {_errors[tier]}");
-                }
+                published |= task.Result.Match(state => BuildPublished(tier, state), error => BuildFailed(tier, error));
             }
             return published;
+        }
+
+        private bool BuildPublished(string tier, TierState state)
+        {
+            Store.Save(Indexer.StatePath(_root, tier), state);
+            _failedAt.Remove(tier);
+            _errors.Remove(tier);
+            Log($"{tier} build published in {state.DurationSeconds:0.#} s: {state.Documents.Count} documents");
+            return true;
+        }
+
+        private bool BuildFailed(string tier, string error)
+        {
+            _failedAt[tier] = DateTime.UtcNow;
+            _errors[tier] = error;
+            Log($"{tier} build failed: {error}");
+            return false;
         }
 
         private void WriteStatus(CaptureReport capture, int recentDocuments, long recentBytes)
@@ -223,12 +224,14 @@ namespace SessionMemory
             });
         }
 
-        private void Log(string message)
-        {
-            var path = Path.Combine(_root, "logs", "watcher.log");
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            if (File.Exists(path) && new FileInfo(path).Length > 1_000_000) File.Move(path, path + ".1", overwrite: true);
-            File.AppendAllText(path, $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz} {message}{Environment.NewLine}");
-        }
+        // Logging is best effort: a log that cannot be written must not stop the watcher or hide the failure being logged.
+        private void Log(string message) =>
+            Attempt.Io(() =>
+            {
+                var path = Path.Combine(_root, "logs", "watcher.log");
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                if (File.Exists(path) && new FileInfo(path).Length > 1_000_000) File.Move(path, path + ".1", overwrite: true);
+                File.AppendAllText(path, $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz} {message}{Environment.NewLine}");
+            });
     }
 }

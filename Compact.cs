@@ -1,9 +1,31 @@
-﻿using System.Globalization;
+﻿using System.Collections.Immutable;
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using CSharpFunctionalExtensions;
 
 namespace SessionMemory
 {
+    /// <summary>One session to show compactly: its ID or an ID prefix, and which messages to show and how long.</summary>
+    sealed internal record ShowRequest
+    {
+        public required string Root { get; init; }
+
+        public required string Id { get; init; }
+
+        public int Last { get; init; } = 10;
+
+        // Shows the messages matching this pattern, clipped around the match, instead of the last ones.
+        public string? Around { get; init; }
+
+        // Neighbouring messages shown with each match.
+        public int Context { get; init; }
+
+        public int Max { get; init; } = 6;
+
+        public int Chars { get; init; } = 1200;
+    }
+
     /// <summary>
     /// Turns transcript Markdown into compact messages. The per-message headers (client, session, title, ids, source)
     /// are about half of every transcript; agents get them once per session instead of once per message.
@@ -37,25 +59,27 @@ namespace SessionMemory
         };
 
         // Works on a whole transcript or on a search passage, which may start or end inside a header.
-        public static List<Segment> Segments(string text)
+        public static ImmutableArray<Segment> Segments(string text)
         {
-            var segments = new List<Segment>();
+            var segments = ImmutableArray.CreateBuilder<Segment>();
             var lines = text.Replace("\r\n", "\n").Split('\n');
             var (number, role, timestamp) = (0, "", "");
             var body = new StringBuilder();
             var header = StartsWithHeader(lines);
             foreach (var line in lines)
             {
-                if (MessageHeader.Match(line) is { Success: true } match)
+                // \d also matches digits of other scripts; a heading whose number is not a plain int is ordinary text.
+                if (MessageHeader.Match(line) is { Success: true } match
+                    && int.TryParse(match.Groups[1].ValueSpan, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed))
                 {
                     Flush();
-                    (number, role, timestamp, header) = (int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture), "", "", true);
+                    (number, role, timestamp, header) = (parsed, "", "", true);
                 }
                 else if (header) (header, role, timestamp) = ReadHeaderLine(line, role, timestamp);
                 else if (line.Trim().Length > 0) body.Append(line).Append('\n');
             }
             Flush();
-            return segments;
+            return segments.ToImmutable();
 
             void Flush()
             {
@@ -109,53 +133,94 @@ namespace SessionMemory
         }
 
         // Reads one session compactly: its last messages, or the messages matching a pattern clipped around the match.
-        public static string Show(string root, string id, int last, string? around, int context, int max, int chars)
-        {
-            var (file, meta) = FindSession(root, id);
-            var messages = Segments(File.ReadAllText(Path.Combine(root, "corpus", file)))
-                .GroupBy(segment => segment.Number)
-                .Select(group => group.First() with
-                {
-                    Text = string.Join('\n', group.Select(segment => segment.Text))
-                })
-                .ToList();
-            var text = new StringBuilder(SessionLine(meta.SessionId, meta.Client, $"{messages.Count} messages", $"last {Time(meta.LastActivity)}", meta.Title)).Append('\n');
-            var picked = new SortedDictionary<int, int>();
-            if (around is null)
-            {
-                for (var index = Math.Max(0, messages.Count - last); index < messages.Count; index++) picked[index] = 0;
-            }
-            else
-            {
-                var pattern = new Regex(around, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(2));
-                var matches = messages.Select((message, index) => (Index: index, Match: pattern.Match(message.Text))).Where(hit => hit.Match.Success).ToList();
-                text.Append($"{matches.Count} matching messages{(matches.Count > max ? $"; showing the newest {max}" : "")}\n");
-                foreach (var (index, match) in matches.TakeLast(max))
-                {
-                    for (var neighbor = Math.Max(0, index - context); neighbor <= Math.Min(messages.Count - 1, index + context); neighbor++) picked.TryAdd(neighbor, 0);
-                    picked[index] = match.Index;
-                }
-            }
-            foreach (var (index, center) in picked) text.Append(Label(messages[index])).Append(' ').Append(Clip(messages[index].Text, chars, center)).Append('\n');
-            return Plain(text.ToString());
-        }
+        public static Result<string, CliError> Show(ShowRequest request) =>
+            FindSession(request.Root, request.Id)
+                .Bind(session => ReadMessages(Path.Combine(request.Root, "corpus", session.Key))
+                    .Bind(messages => Excerpts(messages, request)
+                        .Map(excerpts => Plain(Heading(session.Value, messages.Length) + excerpts))));
 
         // An ID prefix resolves to one session: an exact ID wins, then the only session that is not a subagent.
-        private static KeyValuePair<string, DocumentMeta> FindSession(string root, string id)
+        public static Result<KeyValuePair<string, DocumentMeta>, CliError> FindSession(string root, string id)
         {
             var documents = Store.Load<Manifest>(Path.Combine(root, "state", "manifest.json"))?.Documents ?? [];
-            var candidates = documents.Where(pair => pair.Value.SessionId.StartsWith(id, StringComparison.OrdinalIgnoreCase)).ToList();
-            if (candidates.Where(pair => pair.Value.SessionId.Equals(id, StringComparison.OrdinalIgnoreCase)).ToList() is { Count: 1 } exact) candidates = exact;
-            else if (candidates.Where(pair => !pair.Value.SessionId.Contains(":subagent:", StringComparison.Ordinal)).ToList() is { Count: 1 } parent) candidates = parent;
-            switch (candidates.Count)
+            var candidates = documents.Where(pair => pair.Value.SessionId.StartsWith(id, StringComparison.OrdinalIgnoreCase)).ToImmutableArray();
+            return OnlyOne(candidates.Where(pair => pair.Value.SessionId.Equals(id, StringComparison.OrdinalIgnoreCase)))
+                .Or(() => OnlyOne(candidates.Where(pair => !pair.Value.SessionId.Contains(":subagent:", StringComparison.Ordinal))))
+                .Or(() => OnlyOne(candidates))
+                .ToResult(() => new CliError(candidates.IsEmpty
+                    ? $"No indexed session starts with '{id}'."
+                    : "Several sessions match; give more of the ID:\n" +
+                      string.Join('\n', candidates.Take(10).Select(pair => $"  {pair.Value.SessionId} | {pair.Value.Client} | {pair.Value.Title}")), 2));
+        }
+
+        // The one item, or nothing when there are none or several.
+        private static Maybe<T> OnlyOne<T>(IEnumerable<T> items) => items.Take(2).ToArray() is [var only] ? Maybe.From(only) : Maybe<T>.None;
+
+        // The parts of a long message are joined again, so each segment is one whole message.
+        private static Result<ImmutableArray<Segment>, CliError> ReadMessages(string path) =>
+            Attempt.Io(() => File.ReadAllText(path))
+                .MapError(error => new CliError(error, 2))
+                .Map(text => Segments(text)
+                    .GroupBy(segment => segment.Number)
+                    .Select(group => group.First() with
+                    {
+                        Text = string.Join('\n', group.Select(segment => segment.Text))
+                    })
+                    .ToImmutableArray());
+
+        private static string Heading(DocumentMeta meta, int count) =>
+            SessionLine(meta.SessionId, meta.Client, $"{count} messages", $"last {Time(meta.LastActivity)}", meta.Title) + "\n";
+
+        // The last messages; with a pattern, a line counting the matching messages, then the newest of them with their neighbours.
+        private static Result<string, CliError> Excerpts(ImmutableArray<Segment> messages, ShowRequest request) =>
+            request.Around is null
+                ? Result.Success<string, CliError>(Render(messages, Newest(messages.Length, request.Last), request.Chars))
+                : Matching(messages, request.Around).Map(matches =>
+                    $"{matches.Length} matching messages{(matches.Length > request.Max ? $"; showing the newest {request.Max}" : "")}\n" +
+                    Render(messages, Around(matches, messages.Length, request.Context, request.Max), request.Chars));
+
+        // Message index -> the position its clip centres on; the last messages are shown from their start.
+        private static SortedDictionary<int, int> Newest(int count, int last)
+        {
+            var picked = new SortedDictionary<int, int>();
+            for (var index = Math.Max(0, count - last); index < count; index++) picked[index] = 0;
+            return picked;
+        }
+
+        // The newest matches are clipped around the match and their neighbours from their start.
+        private static SortedDictionary<int, int> Around(ImmutableArray<(int Index, int Position)> matches, int count, int context, int max)
+        {
+            var picked = new SortedDictionary<int, int>();
+            foreach (var (index, position) in matches.TakeLast(max))
             {
-                case 0:
-                    throw new InvalidOperationException($"No indexed session starts with '{id}'.");
-                case > 1:
-                    throw new InvalidOperationException("Several sessions match; give more of the ID:\n" +
-                                                        string.Join('\n', candidates.Take(10).Select(pair => $"  {pair.Value.SessionId} | {pair.Value.Client} | {pair.Value.Title}")));
+                for (var neighbor = Math.Max(0, index - context); neighbor <= Math.Min(count - 1, index + context); neighbor++) picked.TryAdd(neighbor, 0);
+                picked[index] = position;
             }
-            return candidates[0];
+            return picked;
+        }
+
+        // The pattern comes from the command line: a syntax error, or a match running longer than two seconds, is reported rather than thrown.
+        private static Result<ImmutableArray<(int Index, int Position)>, CliError> Matching(ImmutableArray<Segment> messages, string around)
+        {
+            try
+            {
+                var pattern = new Regex(around, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(2));
+                return messages.Select((message, index) => (Index: index, Match: pattern.Match(message.Text)))
+                    .Where(hit => hit.Match.Success)
+                    .Select(hit => (hit.Index, Position: hit.Match.Index))
+                    .ToImmutableArray();
+            }
+            catch (Exception error) when (error is ArgumentException or RegexMatchTimeoutException)
+            {
+                return new CliError(error.Message, 2);
+            }
+        }
+
+        private static string Render(ImmutableArray<Segment> messages, SortedDictionary<int, int> picked, int chars)
+        {
+            var text = new StringBuilder();
+            foreach (var (index, center) in picked) text.Append(Label(messages[index])).Append(' ').Append(Clip(messages[index].Text, chars, center)).Append('\n');
+            return text.ToString();
         }
 
         // A whole transcript starts with a header, and a passage can start inside one. Later headers follow a message heading.

@@ -1,5 +1,7 @@
-﻿using System.Runtime.InteropServices;
+﻿using System.Collections.Immutable;
+using System.Runtime.InteropServices;
 using System.Text;
+using CSharpFunctionalExtensions;
 
 namespace SessionMemory
 {
@@ -26,6 +28,9 @@ namespace SessionMemory
             Dispose();
             throw new IOException($"Cannot open {path}: {message}");
         }
+
+        // A database that cannot be opened is a failure carrying the constructor's "IOException: Cannot open ..." text.
+        public static Result<SqliteReader, string> Open(string path) => Attempt.Io(() => new SqliteReader(path));
 
         public IEnumerable<object?[]> Query(string sql)
         {
@@ -58,6 +63,13 @@ namespace SessionMemory
                 _ = sqlite3_finalize(statement);
             }
         }
+
+        // Materializes every row (the statement is finalized before returning), so use it for small results only.
+        public Result<ImmutableArray<object?[]>, string> TryQuery(string sql) => Attempt.Io(() => Query(sql).ToImmutableArray());
+
+        // Probes the main schema the way SQLite resolves table names (ASCII case-insensitive); real I/O errors still throw.
+        public bool HasTable(string name) =>
+            Query($"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '{name.Replace("'", "''", StringComparison.Ordinal)}' COLLATE NOCASE").Any();
 
         public void Execute(string sql)
         {

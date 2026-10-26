@@ -37,13 +37,12 @@ namespace SessionMemory
 
             public string? AsString() => value is { ValueKind: JsonValueKind.String } item ? item.GetString() : null;
 
-            public long IntOr(long fallback) => !value.Truthy() ? fallback : value!.Value.ValueKind switch
+            public long IntOr(long fallback) => !value.Truthy() ? fallback : value!.Value switch
             {
-                JsonValueKind.Number => value.Value.TryGetInt64(out var number) ? number : (long)Math.Truncate(value.Value.GetDouble()),
-                JsonValueKind.True => 1,
-                JsonValueKind.String => long.Parse(value.Value.GetString()!.Trim(), CultureInfo.InvariantCulture),
-                JsonValueKind.Undefined or JsonValueKind.Object or JsonValueKind.Array or JsonValueKind.False or JsonValueKind.Null =>
-                    throw new FormatException("Value is not an integer."),
+                { ValueKind: JsonValueKind.Number } number => number.TryGetInt64(out var whole) ? whole : (long)Math.Truncate(number.GetDouble()),
+                { ValueKind: JsonValueKind.True } => 1,
+                { ValueKind: JsonValueKind.String } text => ParseInteger(text.GetString()!),
+                // Truthy() leaves only non-empty objects and arrays here, which Python's int() rejects as well.
                 _ => throw new FormatException("Value is not an integer.")
             };
 
@@ -113,6 +112,13 @@ namespace SessionMemory
 
         public static double? ParseDouble(string? text) =>
             double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var number) ? number : null;
+
+        // Text that is not a whole number still fails the family: long.Parse raises the same FormatException (or OverflowException) as before.
+        private static long ParseInteger(string text)
+        {
+            var trimmed = text.Trim();
+            return long.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number) ? number : long.Parse(trimmed, CultureInfo.InvariantCulture);
+        }
     }
 
     /// <summary>Python-style conversions of SQLite column values.</summary>
@@ -168,7 +174,8 @@ namespace SessionMemory
         {
             MaxDepth = 512
         };
-        private static readonly byte[] ByteOrderMark = [0xEF, 0xBB, 0xBF];
+
+        private static ReadOnlySpan<byte> ByteOrderMark => [0xEF, 0xBB, 0xBF];
 
         // Yielded elements are only valid until the enumerator advances.
         public static IEnumerable<JsonElement> Read(string path, JsonlStats stats, params string[] tokens)
@@ -195,23 +202,13 @@ namespace SessionMemory
             }
         }
 
-        public static JsonDocument? Parse(string? text)
-        {
-            if (text is null) return null;
-            try
-            {
-                return JsonDocument.Parse(text, Options);
-            }
-            catch (JsonException)
-            {
-                return null;
-            }
-        }
+        public static JsonDocument? Parse(string? text) =>
+            text is not null && TryParse(text, static json => JsonDocument.Parse(json, Options), out var document) ? document : null;
 
         // Parses a line that contains any of the needles (every line when there are none) and counts lines that fail to parse.
         private static JsonDocument? ParseMatching(ReadOnlyMemory<byte> line, bool partial, byte[][] needles, JsonlStats stats)
         {
-            if (needles.Length > 0 && !needles.Any(needle => line.Span.IndexOf(needle) >= 0))
+            if (needles.Length > 0 && !ContainsAny(line.Span, needles))
             {
                 if (partial && !Parses(line)) stats.PartialTrailing++;
                 return null;
@@ -219,6 +216,14 @@ namespace SessionMemory
             var document = Parse(line);
             if (document is null) CountInvalid(stats, partial);
             return document;
+        }
+
+        // A loop rather than Any(lambda): the lambda would capture the line and allocate a closure for every line.
+        private static bool ContainsAny(ReadOnlySpan<byte> line, byte[][] needles)
+        {
+            foreach (var needle in needles)
+                if (line.IndexOf(needle) >= 0) return true;
+            return false;
         }
 
         private static void CountInvalid(JsonlStats stats, bool partial)
@@ -233,32 +238,31 @@ namespace SessionMemory
             return document is not null;
         }
 
-        private static JsonDocument? Parse(ReadOnlyMemory<byte> line)
-        {
-            if (Utf8Json(line) is not { } json) return null;
-            try
-            {
-                return JsonDocument.Parse(json, Options);
-            }
-            catch (JsonException)
-            {
-                return null;
-            }
-        }
+        private static JsonDocument? Parse(ReadOnlyMemory<byte> line) =>
+            Utf8Json(line) is { } json && TryParse(json, static utf8 => JsonDocument.Parse(utf8, Options), out var document) ? document : null;
 
+        // JSON null is valid, so validity is reported separately from the node.
         private static JsonNode? ParseNode(ReadOnlyMemory<byte> line, out bool valid)
         {
             valid = false;
             if (Utf8Json(line) is not { } json) return null;
+            valid = TryParse(json, static utf8 => JsonNode.Parse(utf8.Span, documentOptions: Options), out var node);
+            return node;
+        }
+
+        // The single JSON boundary: the parsers have no Try variant, and a JsonException means the input is not valid JSON.
+        // The parse delegates are static lambdas, which the compiler caches, so a call allocates nothing beyond the parse itself.
+        private static bool TryParse<TInput, TOutput>(TInput input, Func<TInput, TOutput> parse, out TOutput? output)
+        {
             try
             {
-                var node = JsonNode.Parse(json.Span, documentOptions: Options);
-                valid = true;
-                return node;
+                output = parse(input);
+                return true;
             }
             catch (JsonException)
             {
-                return null;
+                output = default;
+                return false;
             }
         }
 

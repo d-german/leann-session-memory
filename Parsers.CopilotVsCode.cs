@@ -1,5 +1,7 @@
-﻿using System.Text.Json;
+﻿using System.Collections.Immutable;
+using System.Text.Json;
 using System.Text.Json.Nodes;
+using CSharpFunctionalExtensions;
 
 namespace SessionMemory
 {
@@ -22,27 +24,19 @@ namespace SessionMemory
                 documents.Add(document);
             }
             stats["event_sessions"] = eventSessionIds.Count;
-            if (!File.Exists(storePath)) return new FamilyResult(documents, stats);
+            if (!File.Exists(storePath)) return new FamilyResult([.. documents], stats);
             var storeDocuments = CopilotStoreDocuments(storePath, eventSessionIds, desktopIds, stats);
             documents.AddRange(storeDocuments);
             stats["store_sessions"] = storeDocuments.Count;
-            return new FamilyResult(documents, stats);
+            return new FamilyResult([.. documents], stats);
         }
 
+        // Desktop sessions are optional: a data.db whose sessions table cannot be read marks none. A file that cannot be opened fails the family.
         private static HashSet<string> CopilotDesktopIds(string dataPath)
         {
-            var desktopIds = new HashSet<string>();
-            if (!File.Exists(dataPath)) return desktopIds;
+            if (!File.Exists(dataPath)) return [];
             using var desktop = new SqliteReader(dataPath);
-            try
-            {
-                foreach (var row in desktop.Query("SELECT id FROM sessions")) desktopIds.Add(Sql.Str(row[0]));
-            }
-            catch (IOException)
-            {
-                desktopIds.Clear();
-            }
-            return desktopIds;
+            return [.. desktop.TryQuery("SELECT id FROM sessions").GetValueOrDefault([]).Select(row => Sql.Str(row[0]))];
         }
 
         private static Document? CopilotEventDocument(string path, HashSet<string> desktopIds, Dictionary<string, long> stats)
@@ -54,7 +48,7 @@ namespace SessionMemory
             if (messages.Count == 0) return null;
             var isDesktop = desktopIds.Contains(sessionId) || producer.Contains("desktop", StringComparison.OrdinalIgnoreCase);
             if (isDesktop) stats["desktop_sessions"]++;
-            return new Document("copilot", isDesktop ? "github-copilot-desktop" : "github-copilot-cli", sessionId, path, messages)
+            return new Document("copilot", isDesktop ? "github-copilot-desktop" : "github-copilot-cli", sessionId, path, [.. messages])
             {
                 Title = WorkspaceName(WorkspaceFile(path))
             };
@@ -119,7 +113,7 @@ namespace SessionMemory
                 var isDesktop = desktopIds.Contains(sessionId);
                 if (isDesktop) stats["desktop_sessions"]++;
                 var sourceRef = $"{storePath}#session_id={sessionId};host_type={Sql.StrOr(session[3], "")};cwd={Sql.StrOr(session[1], "")};repository={Sql.StrOr(session[2], "")}";
-                documents.Add(new Document("copilot", isDesktop ? "github-copilot-desktop" : "github-copilot-cli-store", sessionId, sourceRef, messages)
+                documents.Add(new Document("copilot", isDesktop ? "github-copilot-desktop" : "github-copilot-cli-store", sessionId, sourceRef, [.. messages])
                 {
                     Title = Sql.StrOr(session[4], "")
                 });
@@ -142,22 +136,19 @@ namespace SessionMemory
             return grouped;
         }
 
-        // The session's top-level "name:" from Copilot's workspace.yaml, a flat file that needs no YAML parser.
-        public static string WorkspaceName(string path)
+        // The session's top-level "name:" from Copilot's workspace.yaml, a flat file that needs no YAML parser; empty when it has none or cannot be read.
+        public static string WorkspaceName(string path) =>
+            Attempt.Io(() => ReadWorkspaceName(path)).GetValueOrDefault(Maybe<string>.None).GetValueOrDefault("");
+
+        private static Maybe<string> ReadWorkspaceName(string path)
         {
-            try
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            while (reader.ReadLine() is { } line)
             {
-                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                using var reader = new StreamReader(stream);
-                while (reader.ReadLine() is { } line)
-                {
-                    if (line.StartsWith("name: ", StringComparison.Ordinal)) return WorkspaceUnquote(line[6..].Trim());
-                }
+                if (line.StartsWith("name: ", StringComparison.Ordinal)) return WorkspaceUnquote(line[6..].Trim());
             }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-            {
-            }
-            return "";
+            return Maybe<string>.None;
         }
 
         private static string WorkspaceUnquote(string value) => value switch
@@ -176,7 +167,7 @@ namespace SessionMemory
             _ => null
         };
 
-        internal static IReadOnlyList<string> ChatFiles(string codeUser)
+        internal static ImmutableArray<string> ChatFiles(string codeUser)
         {
             string[][] patterns =
             [
@@ -200,7 +191,7 @@ namespace SessionMemory
             }
             var files = found.ToList();
             files.Sort(ComparePaths);
-            return files;
+            return [.. files];
         }
 
         // Python sorts Windows paths by their lower-cased components.
@@ -231,13 +222,13 @@ namespace SessionMemory
                 var sessionId = state["sessionId"].StrOr(Path.GetFileNameWithoutExtension(path));
                 var messages = VsCodeMessages(state["requests"]);
                 if (messages.Count > 0)
-                    documents.Add(new Document("vscode", "vscode-copilot", sessionId, path, messages)
+                    documents.Add(new Document("vscode", "vscode-copilot", sessionId, path, [.. messages])
                     {
                         Title = state["customTitle"].AsString() ?? ""
                     });
             }
             stats["sessions"] = documents.Count;
-            return new FamilyResult(documents, stats);
+            return new FamilyResult([.. documents], stats);
         }
 
         private static List<Message> VsCodeMessages(JsonNode? requests)
@@ -283,38 +274,34 @@ namespace SessionMemory
         }
 
         // VS Code chat files are edit logs (ObjectMutationLog): kind 0 sets the state, 1 sets a path, 2 cuts an array
-        // at "i" and appends "v", 3 deletes a property.
+        // at "i" and appends "v", 3 deletes a property. An operation that does not fit the state changes nothing and is counted.
         public static (JsonObject State, long Errors) Replay(string path, JsonlStats stats)
         {
             var state = new JsonObject();
             long errors = 0;
             foreach (var operation in Jsonl.ReadNodes(path, stats))
             {
-                try
-                {
-                    switch (OperationKind(operation["kind"]))
-                    {
-                        case 0 when operation["v"] is JsonObject initial:
-                            operation.Remove("v");
-                            state = initial;
-                            break;
-                        case 1 when state.Count > 0:
-                            SetPath(state, Keys(operation), Take(operation));
-                            break;
-                        case 2 when state.Count > 0:
-                            Push(state, Keys(operation), operation["i"], Take(operation));
-                            break;
-                        case 3 when state.Count > 0:
-                            SetPath(state, Keys(operation), null);
-                            break;
-                    }
-                }
-                catch (ReplayException)
-                {
-                    errors++;
-                }
+                if (Apply(state, operation).TryGetValue(out var next)) state = next;
+                else errors++;
             }
             return (state, errors);
+        }
+
+        // Edits before the first state, unknown kinds and an initial state that is not an object are skipped and keep the state.
+        private static Result<JsonObject, ReplayError> Apply(JsonObject state, JsonObject operation) => OperationKind(operation["kind"]) switch
+        {
+            0 when operation["v"] is JsonObject initial => Adopt(operation, initial),
+            1 when state.Count > 0 => Keys(operation).Bind(keys => SetPath(state, keys, Take(operation))).Map(() => state),
+            2 when state.Count > 0 => Keys(operation).Bind(keys => Push(state, keys, operation["i"], Take(operation))).Map(() => state),
+            3 when state.Count > 0 => Keys(operation).Bind(keys => SetPath(state, keys, null)).Map(() => state),
+            _ => state
+        };
+
+        // The initial state leaves its operation, which is discarded, so it can be edited as the root.
+        private static JsonObject Adopt(JsonObject operation, JsonObject initial)
+        {
+            operation.Remove("v");
+            return initial;
         }
 
         private static int OperationKind(JsonNode? kind) => kind.Kind() switch
@@ -325,8 +312,9 @@ namespace SessionMemory
             _ => -1
         };
 
-        private static List<JsonNode?> Keys(JsonObject operation) =>
-            operation.TryGetPropertyValue("k", out var keys) && keys is JsonArray path ? [.. path] : throw new ReplayException();
+        // A path needs at least one key: with none there is no property to set and the root is never an array.
+        private static Result<JsonArray, ReplayError> Keys(JsonObject operation) =>
+            operation["k"] is JsonArray { Count: > 0 } keys ? keys : ReplayError.BadPath;
 
         private static JsonNode? Take(JsonObject operation)
         {
@@ -335,56 +323,66 @@ namespace SessionMemory
             return value;
         }
 
-        private static void SetPath(JsonObject root, List<JsonNode?> keys, JsonNode? value)
+        // Every key but the last must lead to an existing container; the last names the property or position to set.
+        private static UnitResult<ReplayError> SetPath(JsonObject root, JsonArray keys, JsonNode? value) =>
+            Walk(root, keys.SkipLast(1)).Bind(parent => Assign(parent, keys[^1], value));
+
+        private static UnitResult<ReplayError> Assign(JsonNode parent, JsonNode? last, JsonNode? value)
         {
-            if (keys.Count == 0) throw new ReplayException();
-            JsonNode? parent = root;
-            for (var index = 0; index < keys.Count - 1; index++) parent = Child(parent, keys[index]);
-            var last = keys[^1];
             switch (parent)
             {
                 case JsonObject item when last.AsString() is { } name:
                     item[name] = value;
-                    break;
+                    return UnitResult.Success<ReplayError>();
                 case JsonArray list when Index(last) is { } position:
-                    list[ReplayPosition(list, position)] = value;
-                    break;
+                    return ReplayPosition(list, position).Tap(at => list[at] = value);
                 // Python accepts a numeric key on an object (a no-op here, transcripts never read it); anything else fails.
                 case JsonObject when Index(last) is not null:
-                    break;
+                    return UnitResult.Success<ReplayError>();
                 default:
-                    throw new ReplayException();
+                    return ReplayError.BadKeyType;
             }
         }
 
         // "i" rewrites the array from that index: a streamed or edited item replaces the rest, and "i" alone removes them.
-        private static void Push(JsonObject root, List<JsonNode?> keys, JsonNode? index, JsonNode? value)
+        private static UnitResult<ReplayError> Push(JsonObject root, JsonArray keys, JsonNode? index, JsonNode? value) =>
+            Walk(root, keys)
+                .Bind(target => (target as JsonArray).ToResult(ReplayError.NotArray))
+                .Bind(items => Cut(index).Tap(cut => Splice(items, cut, value)));
+
+        // Without "i" nothing is cut; a cut past the end keeps every item.
+        private static Result<long, ReplayError> Cut(JsonNode? index) => index switch
         {
-            var target = keys.Aggregate<JsonNode?, JsonNode?>(root, Child);
-            if (target is not JsonArray items) throw new ReplayException();
-            if (index is not null)
-            {
-                var cut = Index(index) is { } at and >= 0 ? at : throw new ReplayException();
-                while (items.Count > cut) items.RemoveAt(items.Count - 1);
-            }
+            null => long.MaxValue,
+            _ when Index(index) is { } at and >= 0 => at,
+            _ => ReplayError.BadIndex
+        };
+
+        private static void Splice(JsonArray items, long cut, JsonNode? value)
+        {
+            while (items.Count > cut) items.RemoveAt(items.Count - 1);
             if (value is not JsonArray additions) return;
             List<JsonNode?> moved = [.. additions];
             additions.Clear();
             foreach (var addition in moved) items.Add(addition);
         }
 
-        private static JsonNode? Child(JsonNode? node, JsonNode? key) => node switch
+        private static Result<JsonNode, ReplayError> Walk(JsonNode root, IEnumerable<JsonNode?> keys) =>
+            keys.Aggregate(Result.Success<JsonNode, ReplayError>(root), (node, key) => node.Bind(parent => Child(parent, key)));
+
+        // A key must name an existing property of an object or a position in an array; a null value cannot be walked into.
+        private static Result<JsonNode, ReplayError> Child(JsonNode node, JsonNode? key) => node switch
         {
-            JsonObject item when key.AsString() is { } name => item.TryGetPropertyValue(name, out var child) ? child : throw new ReplayException(),
-            JsonArray list when Index(key) is { } position => list[ReplayPosition(list, position)],
-            _ => throw new ReplayException()
+            JsonObject item when key.AsString() is { } name => item[name].ToResult(ReplayError.MissingKey),
+            JsonArray list when Index(key) is { } position => ReplayPosition(list, position).Bind(at => list[at].ToResult(ReplayError.MissingKey)),
+            _ => ReplayError.BadKeyType
         };
 
         // A negative position counts from the end, as in Python.
-        private static int ReplayPosition(JsonArray list, long position)
+        private static Result<int, ReplayError> ReplayPosition(JsonArray list, long position)
         {
             var target = position < 0 ? position + list.Count : position;
-            return target >= 0 && target < list.Count ? (int)target : throw new ReplayException();
+            return target >= 0 && target < list.Count ? (int)target : ReplayError.OutOfRange;
         }
 
         private static long? Index(JsonNode? key) => key.Kind() switch
@@ -414,6 +412,15 @@ namespace SessionMemory
             public string Text => Chunks.Count > 0 ? string.Concat(Chunks.Values) : Last;
         }
 
-        sealed private class ReplayException : Exception;
+        // Why an operation did not fit the state; replay only counts them.
+        private enum ReplayError
+        {
+            BadPath,
+            MissingKey,
+            BadKeyType,
+            OutOfRange,
+            NotArray,
+            BadIndex
+        }
     }
 }
