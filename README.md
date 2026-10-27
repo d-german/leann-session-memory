@@ -17,11 +17,25 @@ searched locally.
 
 ## Install
 
+Open PowerShell and run:
+
 ```powershell
 git clone https://github.com/d-german/leann-session-memory
 cd leann-session-memory
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 .\Install-SessionMemory.ps1
 ```
+
+The execution-policy change allows locally cloned scripts to run in this PowerShell window and expires when you
+close it. It does not require administrator rights. To keep the setting for your Windows user in future sessions,
+use this instead:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+
+Organization-enforced Group Policy takes precedence over both settings. If it blocks scripts, ask your administrator
+for an approved way to run setup. See [PowerShell execution policies](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_execution_policies?view=powershell-5.1).
 
 The installer:
 
