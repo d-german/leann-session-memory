@@ -54,6 +54,9 @@ recovery state so you can retry. After an interrupted setup, running setup again
 before retrying; running setup with `-Rollback` restores the previous installation and stops there. Run `-Rollback`
 again to remove a restored installation's task and memory instructions.
 
+If an instruction file was edited after an interrupted setup, recovery stops and retains its backups instead of
+overwriting those edits. Review the named file and its saved copy before retrying recovery.
+
 Check progress after setup with:
 
 ```powershell

@@ -12,7 +12,7 @@ $modelCommand = "& (Join-Path `$LeannDir 'leann-dotnet.exe') --setup --model fac
 if (-not $script:installerText.Contains($modelCommand)) { throw 'Installer model command changed' }
 $script:installerText = $script:installerText.Replace($modelCommand, "throw 'Model download is forbidden in tests'")
 $allowed = @('ConvertFrom-Json','ConvertTo-Json','Copy-Item','Disable-ScheduledTask','dotnet','Enable-ScheduledTask','Export-ScheduledTask','ForEach-Object','Get-CimInstance','Get-Content','Get-Date','Get-ScheduledTask','Invoke-RestMethod','Join-Path','New-Item','New-ScheduledTaskAction','New-ScheduledTaskSettingsSet','New-ScheduledTaskTrigger','New-TimeSpan','Out-Null','Register-ScheduledTask','Remove-Item','Select-String','Set-Content','Split-Path','Start-ScheduledTask','Stop-Owned','Stop-Process','Stop-ScheduledTask','Stop-Watcher','Test-Path','Unregister-ScheduledTask','Wait-Process','Where-Object','Write-InstallState','Write-Output')
-$allowed += @('Assert-BinaryBackup', 'Remove-BinaryBackup', 'Remove-InstallDirectory', 'Restore-Install')
+$allowed += @('Assert-BinaryBackup', 'New-Object', 'Remove-BinaryBackup', 'Remove-InstallDirectory', 'Restore-Install')
 $parsed = [Management.Automation.Language.Parser]::ParseInput($script:installerText, [ref]$null, [ref]$null)
 foreach ($command in $parsed.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true)) {
     $name = $command.GetCommandName()
@@ -245,6 +245,37 @@ try {
     Assert ($afterRecovery.instructionFiles[0].backup -eq $previous.instructionFiles[0].backup) 'normal install recovers previous backup metadata first'
     Assert (@([regex]::Matches((Get-Content $agents -Raw -Encoding UTF8), '<!-- leann-session-memory:start -->')).Count -eq 1) 'normal install after recovery keeps one block'
     Assert ($script:task.State -eq 'Running') 'normal install after recovery starts task'
+
+    foreach ($editedFile in @('existing', 'new')) {
+        Reset-Fixture
+        [IO.File]::WriteAllText($agents, $original, (New-Object Text.UTF8Encoding $true))
+        $before = [IO.File]::ReadAllBytes($agents)
+        $script:cleanupFail = $true
+        Expect-Failure 'register'
+        $journal = Get-Content $state -Raw -Encoding UTF8 | ConvertFrom-Json
+        $backupPath = $journal.recovery.binaryBackup
+        $editedPath = if ($editedFile -eq 'existing') { $agents } else { $claude }
+        New-Item -ItemType Directory -Force -Path (Split-Path $editedPath) | Out-Null
+        [IO.File]::WriteAllText($editedPath, "User edit $([char]0x03A9)", (New-Object Text.UTF8Encoding $true))
+        $editedBytes = [IO.File]::ReadAllBytes($editedPath)
+        $taskBefore = $script:task.State
+        $binPath = Join-Path $script:localData 'LeannSessionMemory\bin\SessionMemory.exe'
+        New-Item -ItemType Directory -Force -Path (Split-Path $binPath) | Out-Null
+        [IO.File]::WriteAllText($binPath, 'sentinel')
+        $binBefore = [IO.File]::ReadAllBytes($binPath)
+        $failed = $false
+        try { Invoke-Install -Rollback } catch { $failed = $true }
+        Assert $failed "$editedFile user edit blocks pending recovery"
+        Assert ([Convert]::ToBase64String([IO.File]::ReadAllBytes($editedPath)) -eq [Convert]::ToBase64String($editedBytes)) "$editedFile user edit is preserved"
+        Assert (Test-Path $state) "$editedFile user edit keeps journal"
+        Assert (Test-Path $backupPath) "$editedFile user edit keeps binary backup"
+        Assert ($script:task.State -eq $taskBefore) "$editedFile user edit leaves task untouched"
+        Assert ([Convert]::ToBase64String([IO.File]::ReadAllBytes($binPath)) -eq [Convert]::ToBase64String($binBefore)) "$editedFile user edit leaves binary untouched"
+        if ($editedFile -eq 'existing') { [IO.File]::WriteAllBytes($agents, $before) }
+        else { Remove-Item $claude -Force }
+        Invoke-Install -Rollback
+        Assert (-not (Test-Path $state)) "$editedFile recovery succeeds after operator resolves edit"
+    }
     Write-Output "PASS: $script:checks assertions"
 }
 finally {
