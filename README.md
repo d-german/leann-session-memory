@@ -48,6 +48,21 @@ The installer:
 The first index builds in the background. `.\Install-SessionMemory.ps1 -Rollback` removes the task and the memory
 section from the instruction files, keeping any other edits; the index is kept.
 
+Setup saves recovery state before stopping an existing installation or replacing its files. If setup fails, it
+restores the previous binaries, instruction files and scheduled task. If recovery cannot finish, it keeps the
+recovery state so you can retry. After an interrupted setup, running setup again restores the previous installation
+before retrying; running setup with `-Rollback` restores the previous installation and stops there. Run `-Rollback`
+again to remove a restored installation's task and memory instructions.
+
+Check progress after setup with:
+
+```powershell
+& "$env:LOCALAPPDATA\LeannSessionMemory\bin\SessionMemory.exe" status
+```
+
+The first index is ready when `archive-state` has a `published_at` value. Check `watcher.errors` for failures;
+`logs\watcher.log` under `%LOCALAPPDATA%\LeannSessionMemory` records background activity.
+
 ## Use
 
 Assistants run these commands on their own; you can too. Every command accepts `--root <path>` to use a data folder
@@ -240,3 +255,16 @@ results an assistant retrieves become part of that assistant's prompt.
 ## License
 
 MIT
+
+## Installer tests
+
+Run the failure-path regression checks in a temporary profile with mocked tasks and downloads:
+
+```powershell
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Installer.ps1
+```
+
+The [Windows installation workflow](.github/workflows/windows-install.yml) also runs real installation, model
+download, indexing, search, reinstall and rollback on fresh GitHub-hosted Windows Server 2022 and 2025 runners.
+Its live test refuses to run outside GitHub Actions or over an existing installation. These checks use the CPU;
+they do not cover Windows 10/11 desktop images or GPU configurations.
