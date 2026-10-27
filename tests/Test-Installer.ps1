@@ -41,6 +41,10 @@ function dotnet {
         $path = Join-Path $script:localData 'LeannSessionMemory\bin\SessionMemory.exe'
         [IO.File]::WriteAllText($path, "published-$script:buildNumber")
         Fail-Once 'publish'
+        if ($script:failure -eq 'edit-during-publish') {
+            [IO.File]::AppendAllText((Join-Path $script:testHome '.codex\AGENTS.md'), 'User edit during setup')
+            $script:failureHit = $true
+        }
     }
     if ($args[0] -eq 'tool') {
         $dir = Join-Path $script:localData 'LeannSessionMemory\leann'
@@ -276,6 +280,15 @@ try {
         Invoke-Install -Rollback
         Assert (-not (Test-Path $state)) "$editedFile recovery succeeds after operator resolves edit"
     }
+    Reset-Fixture
+    [IO.File]::WriteAllText($agents, $original)
+    Expect-Failure 'edit-during-publish'
+    Assert ((Get-Content $agents -Raw -Encoding UTF8).Contains('User edit during setup')) 'setup preserves an edit made while publishing'
+    Assert (Test-Path $state) 'concurrent edit retains recovery metadata'
+    Assert ($null -eq $script:task) 'concurrent edit does not register a new task'
+    [IO.File]::WriteAllText($agents, $original)
+    Invoke-Install -Rollback
+    Assert (-not (Test-Path $state)) 'concurrent edit recovery can finish after resolving the conflict'
     Write-Output "PASS: $script:checks assertions"
 }
 finally {

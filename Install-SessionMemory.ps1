@@ -256,6 +256,13 @@ try {
     }
     Copy-Item (Join-Path $PSScriptRoot 'Search-SessionMemory.ps1'), $PSCommandPath -Destination $Bin -Force
 
+foreach ($Snapshot in $Snapshots) {
+    $ExistsNow = Test-Path -LiteralPath $Snapshot.path
+    $CurrentBytes = if ($ExistsNow) { [Convert]::ToBase64String([IO.File]::ReadAllBytes($Snapshot.path)) } else { $null }
+    if ($ExistsNow -ne $Snapshot.exists -or ($ExistsNow -and $CurrentBytes -cne $Snapshot.bytes)) {
+        throw "Instruction file changed while setup was running: $($Snapshot.path). Recovery state and backups were retained."
+    }
+}
 foreach ($Update in $Updates) {
     New-Item -ItemType Directory -Force -Path (Split-Path $Update.path) | Out-Null
     Set-Content -Path $Update.path -Value $Update.value -Encoding utf8 -NoNewline

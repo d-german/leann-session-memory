@@ -42,6 +42,9 @@ jobs:
       - name: Installer failure-path regression tests
         shell: powershell
         run: .\tests\Test-Installer.ps1
+      - name: PowerShell 7 regression tests
+        shell: pwsh
+        run: ./tests/Test-Installer.ps1
       - name: Install, index, search, reinstall and roll back
         shell: powershell
         run: .\tests\Test-Installer-Windows.ps1
