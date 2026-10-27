@@ -50,7 +50,8 @@ section from the instruction files, keeping any other edits; the index is kept.
 
 Setup saves recovery state before stopping an existing installation or replacing its files. If setup fails, it
 restores the previous binaries, instruction files and scheduled task. If recovery cannot finish, it keeps the
-recovery state so you can retry. After an interrupted setup, running setup again restores the previous installation
+recovery state so you can retry. Reinstall temporarily needs disk space for an extra copy of the installed app and
+private LEANN files. After an interrupted setup, running setup again restores the previous installation
 before retrying; running setup with `-Rollback` restores the previous installation and stops there. Run `-Rollback`
 again to remove a restored installation's task and memory instructions.
 
