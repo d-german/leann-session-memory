@@ -39,11 +39,26 @@ wait_ready() {
         fi
         sleep 3
     done
-    cat "$ROOT/state/watcher.json" 2> /dev/null || true
-    tail -n 30 "$ROOT/logs/watcher.log" 2> /dev/null || true
-    tail -n 30 "$WORK/session-memory-watcher.out" 2> /dev/null || true
+    diagnose
     echo 'The watcher did not build and serve its first index before the timeout.' >&2
     return 1
+}
+
+diagnose() {
+    {
+        echo '--- processes'
+        ps aux | grep -i -E 'dotnet|SessionMemory|leann' | grep -v grep || true
+        echo '--- where the data went'
+        find "$HOME" -maxdepth 7 \( -name 'watcher.json' -o -name 'watcher.log' -o -name 'LeannSessionMemory' \) -not -path '*/work/*' 2> /dev/null || true
+        echo '--- state and logs'
+        ls -laR "$ROOT/state" "$ROOT/logs" 2>&1 | head -40 || true
+        cat "$ROOT/state/watcher.json" 2> /dev/null || true
+        tail -n 30 "$ROOT/logs/watcher.log" 2> /dev/null || true
+        echo '--- watcher output'
+        cat "$WORK/session-memory-watcher.out" 2> /dev/null || true
+        echo '--- status'
+        "$EXE" status 2>&1 | head -30 || true
+    } >&2
 }
 
 finds_seeded_session() {
