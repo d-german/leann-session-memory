@@ -93,6 +93,7 @@ if [ "$(uname -s)" = Darwin ]; then
     check 'launchd agent definition is valid' plutil -lint "$HOME/Library/LaunchAgents/com.leannsessionmemory.refresh.plist"
 else
     check 'systemd unit sets a memory limit' grep -q '^MemoryMax=' "$HOME/.config/systemd/user/leann-session-memory.service"
+    check 'the search command is unquoted, so a permission rule can match it' grep -q "^$EXE search " "$CLAUDE"
 fi
 
 start_watcher

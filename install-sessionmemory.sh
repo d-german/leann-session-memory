@@ -195,7 +195,9 @@ If the shell does not allow this command in the current session, continue withou
 <!-- leann-session-memory:end -->
 EOF
 BLOCK="${BLOCK%$'\n'}"
-BLOCK="${BLOCK//@EXE@/$EXE}"
+# A bare path lets an assistant's permission rule such as shell(<path>:*) match the command; quote it only when it must be.
+case "$EXE" in *[!A-Za-z0-9_./-]*) COMMAND="\"$EXE\"" ;; *) COMMAND="$EXE" ;; esac
+BLOCK="${BLOCK//\"@EXE@\"/$COMMAND}"
 
 # Assistants that are not installed (no config folder yet) are skipped; run the installer again after installing one.
 MANIFEST_LINES=''
