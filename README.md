@@ -75,11 +75,12 @@ cd leann-session-memory
 ./install-sessionmemory.sh
 ```
 
-The installer builds the app into `~/.local/share/LeannSessionMemory/bin`, installs its own copy of LEANN .NET and
-downloads the model if it's missing. It adds the same memory section to the instruction files of the assistants that
-are installed (`~/.codex`, `~/.claude` and `~/.copilot`, keeping backups) and starts the watcher as a systemd user
-service on Linux (with lingering, so it survives logout) or a launchd agent on macOS. Use the `SessionMemory` launcher
-in that `bin` folder in place of `SessionMemory.exe`, and call `search` on it directly; there is no PowerShell wrapper.
+The installer builds the app into the `bin` folder of the data folder (`~/.local/share/LeannSessionMemory` on Linux,
+`~/Library/Application Support/LeannSessionMemory` on macOS), installs its own copy of LEANN .NET and downloads the
+model if it's missing. It adds the same memory section to the instruction files of the assistants that are installed
+(`~/.codex`, `~/.claude` and `~/.copilot`, keeping backups) and starts the watcher as a systemd user service on Linux
+(with lingering, so it survives logout) or a launchd agent on macOS. Use the `SessionMemory` launcher in that `bin`
+folder in place of `SessionMemory.exe`, and call `search` on it directly; there is no PowerShell wrapper.
 
 - On Linux the service runs at the lowest priority with a CPU and memory cap, so it is safe on a shared machine.
   `SESSIONMEMORY_CPU_QUOTA` (default `200%`), `SESSIONMEMORY_MEMORY_HIGH_PERCENT` (`40`) and

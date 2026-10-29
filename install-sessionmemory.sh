@@ -9,11 +9,16 @@
 set -euo pipefail
 
 SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The default data folder of the app is .NET's LocalApplicationData: XDG_DATA_HOME or ~/.local/share on Linux, but
+# ~/Library/Application Support on macOS.
+case "$(uname -s)" in
+    Linux) OS=linux; ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/LeannSessionMemory" ;;
+    Darwin) OS=macos; ROOT="$HOME/Library/Application Support/LeannSessionMemory" ;;
+    *) echo "Unsupported system: $(uname -s). Use Install-SessionMemory.ps1 on Windows." >&2; exit 1 ;;
+esac
 # A private LEANN .NET, so the global tool and its running servers are never touched.
 # 2.10 or later is required: it ranks the recent and archive indexes together in one search.
 LEANN_VERSION='2.10.1'
-# The default data folder of the app: .NET's LocalApplicationData on Linux and macOS.
-ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/LeannSessionMemory"
 BIN="$ROOT/bin"
 LEANN_DIR="$ROOT/leann"
 LEANN_TOOL="$ROOT/leann-tool"
@@ -26,12 +31,6 @@ UNIT='leann-session-memory.service'
 UNIT_FILE="$HOME/.config/systemd/user/$UNIT"
 TARGETS=("$HOME/.codex/AGENTS.md" "$HOME/.claude/CLAUDE.md" "$HOME/.copilot/copilot-instructions.md")
 TAB=$'\t'
-
-case "$(uname -s)" in
-    Linux) OS=linux ;;
-    Darwin) OS=macos ;;
-    *) echo "Unsupported system: $(uname -s). Use Install-SessionMemory.ps1 on Windows." >&2; exit 1 ;;
-esac
 
 ROLLBACK=0
 SERVICE=1

@@ -48,7 +48,8 @@ jobs:
         if: always()
         run: |
           mkdir -p "$RUNNER_TEMP/session-memory-install-evidence"
-          cp -R "${XDG_DATA_HOME:-$HOME/.local/share}/LeannSessionMemory/logs" "$RUNNER_TEMP/session-memory-install-evidence/" || true
+          cp -R "$HOME/Library/Application Support/LeannSessionMemory/logs" "$RUNNER_TEMP/session-memory-install-evidence/" 2>/dev/null || true
+          cp -R "${XDG_DATA_HOME:-$HOME/.local/share}/LeannSessionMemory/logs" "$RUNNER_TEMP/session-memory-install-evidence/" 2>/dev/null || true
           cp "$RUNNER_TEMP"/session-memory-watcher.out "$RUNNER_TEMP/session-memory-install-evidence/" || true
       - name: Upload installation evidence
         if: always()

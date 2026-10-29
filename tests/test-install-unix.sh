@@ -5,7 +5,7 @@ set -euo pipefail
 if [ "${GITHUB_ACTIONS:-}" != true ]; then echo 'Run this test only on a disposable GitHub-hosted runner.' >&2; exit 1; fi
 
 SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/LeannSessionMemory"
+if [ "$(uname -s)" = Darwin ]; then ROOT="$HOME/Library/Application Support/LeannSessionMemory"; else ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/LeannSessionMemory"; fi
 EXE="$ROOT/bin/SessionMemory"
 TIMEOUT="${TIMEOUT_SECONDS:-900}"
 CLAUDE="$HOME/.claude/CLAUDE.md"
