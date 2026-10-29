@@ -295,3 +295,8 @@ The [Windows installation workflow](.github/workflows/windows-install.yml) also 
 download, indexing, search, reinstall and rollback on fresh GitHub-hosted Windows Server 2022 and 2025 runners.
 Its live test refuses to run outside GitHub Actions or over an existing installation. These checks use the CPU;
 they do not cover Windows 10/11 desktop images or GPU configurations.
+
+The same workflow runs [`tests/test-install-unix.sh`](tests/test-install-unix.sh) on GitHub-hosted `ubuntu-latest` and
+`macos-latest` (Apple Silicon) runners: real installation, model download, indexing, search, reinstall and rollback.
+Runners have no user service manager, so CI writes and validates the systemd unit or launchd plist but does not start
+it; the Linux service has been run on an Ubuntu VM only. Intel Macs and Linux on arm64 are untested.
