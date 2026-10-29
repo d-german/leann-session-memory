@@ -90,6 +90,8 @@ folder in place of `SessionMemory.exe`, and call `search` on it directly; there 
   writes the service definition without starting it.
 - A failed install restores the previous app and instruction files. Unlike the Windows installer, it keeps no recovery
   state for an install that is killed halfway.
+- Copilot CLI asks before it runs the launcher and before it reads the data folder. For a headless run, allow both:
+  `copilot -p "..." --add-dir <data folder> --allow-tool "shell(<data folder>/bin/SessionMemory:*)"`.
 
 ## Use
 
