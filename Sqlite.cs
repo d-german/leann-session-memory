@@ -1,11 +1,12 @@
 ﻿using System.Collections.Immutable;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using CSharpFunctionalExtensions;
 
 namespace SessionMemory
 {
-    /// <summary>Read-only queries through the SQLite engine that ships with Windows (winsqlite3.dll).</summary>
+    /// <summary>Read-only queries through the SQLite engine the operating system ships (winsqlite3.dll on Windows, libsqlite3 on macOS and Linux).</summary>
     sealed internal partial class SqliteReader : IDisposable
     {
         private const string Library = "winsqlite3.dll";
@@ -20,6 +21,8 @@ namespace SessionMemory
 
         private IntPtr _handle;
 
+        static SqliteReader() => NativeLibrary.SetDllImportResolver(typeof(SqliteReader).Assembly, Resolve);
+
         public SqliteReader(string path)
         {
             var uri = Encoding.UTF8.GetBytes(new Uri(path).AbsoluteUri + "?mode=ro\0");
@@ -31,6 +34,12 @@ namespace SessionMemory
 
         // A database that cannot be opened is a failure carrying the constructor's "IOException: Cannot open ..." text.
         public static Result<SqliteReader, string> Open(string path) => Attempt.Io(() => new SqliteReader(path));
+
+        // Windows keeps the default lookup of winsqlite3.dll; elsewhere the same imports bind to the system SQLite.
+        private static IntPtr Resolve(string name, Assembly assembly, DllImportSearchPath? searchPath) =>
+            name != Library || OperatingSystem.IsWindows()
+                ? IntPtr.Zero
+                : NativeLibrary.Load(OperatingSystem.IsMacOS() ? "libsqlite3.dylib" : "libsqlite3.so.0", assembly, searchPath);
 
         public IEnumerable<object?[]> Query(string sql)
         {
