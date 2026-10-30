@@ -10,7 +10,7 @@ searched locally.
 
 ## Requirements
 
-- Windows 10 or 11 and the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
+- Windows 10 or 11, macOS or Linux, and the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
 - About 650 MB for LEANN .NET and the `facebook/contriever` model, plus the index (about 250 MB for 50 MB of
   conversation text).
 - A GPU helps: the first full index of 50 MB of text took about 19 minutes on a laptop GPU.
@@ -66,6 +66,32 @@ Check progress after setup with:
 
 The first index is ready when `archive-state` has a `published_at` value. Check `watcher.errors` for failures;
 `logs\watcher.log` under `%LOCALAPPDATA%\LeannSessionMemory` records background activity.
+
+### macOS and Linux
+
+```bash
+git clone https://github.com/d-german/leann-session-memory
+cd leann-session-memory
+./install-sessionmemory.sh
+```
+
+The installer builds the app into the `bin` folder of the data folder (`~/.local/share/LeannSessionMemory` on Linux,
+`~/Library/Application Support/LeannSessionMemory` on macOS), installs its own copy of LEANN .NET and downloads the
+model if it's missing. It adds the same memory section to the instruction files of the assistants that are installed
+(`~/.codex`, `~/.claude` and `~/.copilot`, keeping backups) and starts the watcher as a systemd user service on Linux
+(with lingering, so it survives logout) or a launchd agent on macOS. Use the `SessionMemory` launcher in that `bin`
+folder in place of `SessionMemory.exe`, and call `search` on it directly; there is no PowerShell wrapper.
+
+- On Linux the service runs at the lowest priority with a CPU and memory cap, so it is safe on a shared machine.
+  `SESSIONMEMORY_CPU_QUOTA` (default `200%`), `SESSIONMEMORY_MEMORY_HIGH_PERCENT` (`40`) and
+  `SESSIONMEMORY_MEMORY_MAX_PERCENT` (`60`) change the caps. A small machine needs a while for the first index.
+- `./install-sessionmemory.sh --rollback` removes the service and the memory section, keeping other edits and the
+  index. `--no-service` installs without a background service (run `SessionMemory run` yourself) and `--no-start`
+  writes the service definition without starting it.
+- A failed install restores the previous app and instruction files. Unlike the Windows installer, it keeps no recovery
+  state for an install that is killed halfway.
+- Copilot CLI asks before it runs the launcher and before it reads the data folder. For a headless run, allow both:
+  `copilot -p "..." --add-dir <data folder> --allow-tool "shell(<data folder>/bin/SessionMemory:*)"`.
 
 ## Use
 
@@ -252,9 +278,8 @@ results an assistant retrieves become part of that assistant's prompt.
 
 ## Limits
 
-- Windows only.
 - Memory only knows what a session recorded; check live systems for their current state.
-- The scheduled task runs only on AC power, the Windows default.
+- On Windows the scheduled task runs only on AC power, the Windows default.
 
 ## License
 
@@ -272,3 +297,8 @@ The [Windows installation workflow](.github/workflows/windows-install.yml) also 
 download, indexing, search, reinstall and rollback on fresh GitHub-hosted Windows Server 2022 and 2025 runners.
 Its live test refuses to run outside GitHub Actions or over an existing installation. These checks use the CPU;
 they do not cover Windows 10/11 desktop images or GPU configurations.
+
+The same workflow runs [`tests/test-install-unix.sh`](tests/test-install-unix.sh) on GitHub-hosted `ubuntu-latest` and
+`macos-latest` (Apple Silicon) runners: real installation, model download, indexing, search, reinstall and rollback.
+Runners have no user service manager, so CI writes and validates the systemd unit or launchd plist but does not start
+it; the Linux service has been run on an Ubuntu VM only. Intel Macs and Linux on arm64 are untested.

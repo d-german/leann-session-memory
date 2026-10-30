@@ -23,7 +23,10 @@ namespace SessionMemory.Clients.VsCode
 
         public IEnumerable<Action<Finder.Scan>> FindWork(FindContext context) => ChatWork(context.Home, SessionsByFile(context.Documents));
 
-        public static string CodeUser(string home) => Path.Combine(home, "AppData", "Roaming", "Code", "User");
+        public static string CodeUser(string home) =>
+            OperatingSystem.IsWindows() ? Path.Combine(home, "AppData", "Roaming", "Code", "User")
+            : OperatingSystem.IsMacOS() ? Path.Combine(home, "Library", "Application Support", "Code", "User")
+            : Path.Combine(home, ".config", "Code", "User");
 
         public static ImmutableArray<string> ChatFiles(string codeUser)
         {

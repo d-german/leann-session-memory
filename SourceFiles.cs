@@ -33,7 +33,9 @@
         public static List<string> Files(string directory, string pattern) => Listing(() => Directory.EnumerateFiles(directory, pattern));
 
         // A directory that vanished or cannot be read lists nothing, so the walk goes on without it.
-        private static List<string> Listing(Func<IEnumerable<string>> entries) => Attempt.Io(() => entries().ToList()).GetValueOrDefault([]);
+        // NTFS lists names alphabetically but ext4 and APFS do not, so sorting keeps the order, and the corpus built from it, the same everywhere.
+        private static List<string> Listing(Func<IEnumerable<string>> entries) =>
+            Attempt.Io(() => entries().Order(StringComparer.OrdinalIgnoreCase).ToList()).GetValueOrDefault([]);
 
         public static string[] DatabaseFiles(string path) => [path, path + "-wal"];
     }

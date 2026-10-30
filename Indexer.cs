@@ -87,7 +87,8 @@ namespace SessionMemory
     {
         public LeannInstallation(ClientContext paths)
         {
-            Executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LeannSessionMemory", "leann", "leann-dotnet.exe");
+            Executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LeannSessionMemory", "leann",
+                OperatingSystem.IsWindows() ? "leann-dotnet.exe" : "leann-dotnet");
             Model = Path.Combine(paths.Home, ".leann", "models", "facebook-contriever", "model.onnx");
         }
 
