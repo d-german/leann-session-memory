@@ -1,9 +1,14 @@
 ﻿# LEANN Session Memory
 
-A local, searchable memory of your AI coding sessions. It indexes your Codex, Claude Code, GitHub Copilot (CLI and
-desktop) and VS Code Copilot Chat conversations with [LEANN .NET](https://github.com/d-german/leann-dotnet), keeps
-the index current in the background, and tells those assistants how to search it. A new session can then find where
-an old one left off instead of starting from a blank memory.
+Start a new AI session in any assistant, in any folder, and ask in plain language to catch up on a subject, for example
+"catch me up on the billing-export refactor". Session memory finds the earlier work wherever it happened, so you no
+longer have to remember which assistant you used or which folder you were in.
+
+It does this with a local, searchable memory of your Codex, Claude Code, GitHub Copilot (CLI and desktop) and VS Code
+Copilot Chat conversations. It indexes them with [LEANN .NET](https://github.com/d-german/leann-dotnet), keeps the index
+current in the background, and tells those assistants how to search it.
+
+![Resume work from anywhere: a new session in any assistant and folder runs search, then show, and find when it needs an exact term](docs/diagrams/resume-anywhere.svg)
 
 Everything runs on your machine: transcripts are read from each tool's local storage, embedded with a local model and
 searched locally.
@@ -97,12 +102,6 @@ folder in place of `SessionMemory.exe`, and call `search` on it directly; there 
 
 Assistants run these commands on their own; you can too. Every command accepts `--root <path>` to use a data folder
 other than `%LOCALAPPDATA%\LeannSessionMemory`, and `--help` prints the usage.
-
-![Resume work from anywhere: a new session in any assistant and folder runs search, then show, and find when it needs an exact term](docs/diagrams/resume-anywhere.svg)
-
-A new session in any assistant and any working folder can ask in plain language where earlier work stopped. It runs
-`search` to find the sessions, `show` to read the part it needs and `find` for an exact name, then carries on; you don't
-have to remember which assistant or folder the work was in.
 
 ```powershell
 $memory = "$env:LOCALAPPDATA\LeannSessionMemory\bin\SessionMemory.exe"
