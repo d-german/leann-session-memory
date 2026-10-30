@@ -98,6 +98,12 @@ folder in place of `SessionMemory.exe`, and call `search` on it directly; there 
 Assistants run these commands on their own; you can too. Every command accepts `--root <path>` to use a data folder
 other than `%LOCALAPPDATA%\LeannSessionMemory`, and `--help` prints the usage.
 
+![Resume work from anywhere: a new session in any assistant and folder runs search, then show, and find when it needs an exact term](docs/diagrams/resume-anywhere.svg)
+
+A new session in any assistant and any working folder can ask in plain language where earlier work stopped. It runs
+`search` to find the sessions, `show` to read the part it needs and `find` for an exact name, then carries on; you don't
+have to remember which assistant or folder the work was in.
+
 ```powershell
 $memory = "$env:LOCALAPPDATA\LeannSessionMemory\bin\SessionMemory.exe"
 & $memory search "what did we decide about the retry limit"   # by meaning
@@ -182,10 +188,10 @@ that order. VS Code sets none. When no variable is set, searches leave nothing o
 
 ## How it works
 
-![Overview: assistant stores, capture, the transcript corpus and indexes, and what search, show and find read](docs/diagrams/overview.svg)
+![How memory stays current: capture, choosing the recent or archive tier, build, validate, publish and restart the search server](docs/diagrams/staying-current.svg)
 
-[overview.svg](docs/diagrams/overview.svg) follows session history from the assistants' stores through capture into the
-transcript corpus, manifest and indexes, and shows which data `search`, `show` and `find` read.
+The diagram follows one watcher cycle. [What search, show and find read](#what-search-show-and-find-read) lists the data
+each command uses.
 
 ### Capture
 
@@ -197,11 +203,6 @@ Excluded sessions are removed, changed transcripts are rewritten and transcripts
 `capture` stops there.
 
 ### Watcher and index builds
-
-![Capture and index update lifecycle](docs/diagrams/lifecycle.svg)
-
-[lifecycle.svg](docs/diagrams/lifecycle.svg) shows one watcher cycle: capture, the choice between recent and archive
-builds, staging, canary validation, publishing and the search server restart.
 
 `run` captures once a minute and again whenever a build finishes, then decides which index to rebuild:
 
@@ -244,11 +245,6 @@ arguments to `CommandDispatcher`:
 
 ### Three services use the client collection
 
-![Session clients: ISessionClient, its registered implementations and the services that use the whole collection](docs/diagrams/clients.svg)
-
-[clients.svg](docs/diagrams/clients.svg) shows `ISessionClient`, its five registered implementations and the three
-services that receive the whole collection.
-
 `Corpus`, `Finder` and `CurrentSession` receive all registered clients as `IEnumerable<ISessionClient>`. Capture checks
 each client's `Sources` and parses changed families; `find` collects each client's `FindWork`. Current-session detection
 checks the registered `SessionVariable` values in order and uses the first usable ID. These services do not select one
@@ -257,11 +253,6 @@ capture. To add an assistant, implement `ISessionClient` and register it;
 [docs/client-strategy.md](docs/client-strategy.md) describes the contract.
 
 ### Each run executes one command
-
-![Command selection: CommandDispatcher runs one ICommand per process](docs/diagrams/commands.svg)
-
-[commands.svg](docs/diagrams/commands.svg) shows how the arguments reach `CommandDispatcher` and what each of the nine
-commands does.
 
 `CommandDispatcher` receives all nine commands and runs the first one whose `Verb` matches the first argument, provided
 the argument that verb requires is there. Anything else prints the usage and exits with 2. The dispatcher selects

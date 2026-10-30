@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1344" width="1240" height="1344" role="img" aria-labelledby="t d" font-family="'Segoe UI', -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif">
+<title id="t">Resume work from anywhere</title>
+<desc id="d">Sequence diagram. You ask an assistant to catch up on earlier work. The assistant runs search, then show, and optionally find, through SessionMemory, which reads the search server, the transcript corpus and the assistants' own stores, and answers with where the work was left off.</desc>
+<defs>
+<marker id="ah" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="#c9d1d9"/></marker>
+<marker id="ahm" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="#8b949e"/></marker>
+</defs>
+<rect width="1240" height="1344" fill="#0d1117"/>
+<text x="30" y="44" font-size="22" font-weight="600" fill="#e6edf3">Resume work from anywhere</text>
+<text x="30" y="70" font-size="13" fill="#8b949e">A new session in any assistant and any working folder finds the earlier work in plain language,</text>
+<text x="30" y="88" font-size="13" fill="#8b949e">then reads only the part it needs. Everything runs on this machine.</text>
+<rect x="30" y="186" width="1180" height="30" rx="6" fill="#161b22"/><text x="44" y="206" font-size="13" font-weight="600" fill="#e6edf3">1   Start a session anywhere</text>
+<rect x="30" y="360" width="1180" height="30" rx="6" fill="#161b22"/><text x="44" y="380" font-size="13" font-weight="600" fill="#e6edf3">2   Find where the work was left off, by meaning</text>
+<rect x="30" y="714" width="1180" height="30" rx="6" fill="#161b22"/><text x="44" y="734" font-size="13" font-weight="600" fill="#e6edf3">3   Read just the part that matters</text>
+<rect x="30" y="966" width="1180" height="30" rx="6" fill="#161b22"/><text x="44" y="986" font-size="13" font-weight="600" fill="#e6edf3">4   Need an exact name, ID or path? Look in the assistants’ own files</text>
+<rect x="30" y="1218" width="1180" height="30" rx="6" fill="#161b22"/><text x="44" y="1238" font-size="13" font-weight="600" fill="#e6edf3">5   Carry on</text>
+<line x1="118" y1="164" x2="118" y2="1324" stroke="#30363d" stroke-width="1.4" stroke-dasharray="3 5"/>
+<line x1="319" y1="164" x2="319" y2="1324" stroke="#30363d" stroke-width="1.4" stroke-dasharray="3 5"/>
+<line x1="520" y1="164" x2="520" y2="1324" stroke="#30363d" stroke-width="1.4" stroke-dasharray="3 5"/>
+<line x1="720" y1="164" x2="720" y2="1324" stroke="#30363d" stroke-width="1.4" stroke-dasharray="3 5"/>
+<line x1="921" y1="164" x2="921" y2="1324" stroke="#30363d" stroke-width="1.4" stroke-dasharray="3 5"/>
+<line x1="1122" y1="164" x2="1122" y2="1324" stroke="#30363d" stroke-width="1.4" stroke-dasharray="3 5"/>
+<rect x="30" y="100" width="176" height="64" rx="10" fill="#161b22" stroke="#8b949e" stroke-width="1.8"/><text x="118" y="126" text-anchor="middle" font-size="14" font-weight="600" fill="#e6edf3">You</text><text x="118" y="146" text-anchor="middle" font-size="11.5" fill="#8b949e">any client, any folder</text>
+<rect x="231" y="100" width="176" height="64" rx="10" fill="#161b22" stroke="#8b949e" stroke-width="1.8"/><text x="319" y="126" text-anchor="middle" font-size="14" font-weight="600" fill="#e6edf3">Assistant</text><text x="319" y="146" text-anchor="middle" font-size="11.5" fill="#8b949e">Copilot, Claude, Codex, VS Code</text>
+<rect x="432" y="100" width="176" height="64" rx="10" fill="#161b22" stroke="#a371f7" stroke-width="1.8"/><text x="520" y="126" text-anchor="middle" font-size="14" font-weight="600" fill="#e6edf3">SessionMemory</text><text x="520" y="146" text-anchor="middle" font-size="11.5" fill="#8b949e">search · show · find</text>
+<rect x="632" y="100" width="176" height="64" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="1.8"/><text x="720" y="126" text-anchor="middle" font-size="14" font-weight="600" fill="#e6edf3">Search server</text><text x="720" y="146" text-anchor="middle" font-size="11.5" fill="#8b949e">LEANN .NET, always loaded</text>
+<rect x="833" y="100" width="176" height="64" rx="10" fill="#161b22" stroke="#3fb950" stroke-width="1.8"/><text x="921" y="126" text-anchor="middle" font-size="14" font-weight="600" fill="#e6edf3">Corpus + manifest</text><text x="921" y="146" text-anchor="middle" font-size="11.5" fill="#8b949e">one transcript per session</text>
+<rect x="1034" y="100" width="176" height="64" rx="10" fill="#161b22" stroke="#f0883e" stroke-width="1.8"/><text x="1122" y="126" text-anchor="middle" font-size="14" font-weight="600" fill="#e6edf3">Native stores</text><text x="1122" y="146" text-anchor="middle" font-size="11.5" fill="#8b949e">the assistants' own files</text>
+<line x1="122" y1="270" x2="317" y2="270" stroke="#c9d1d9" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="219" y="243" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">“Catch me up on the billing-export</text>
+<text x="219" y="260" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">refactor and keep going.”</text>
+<rect x="207" y="290" width="425" height="50" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1.3"/>
+<text x="221" y="310" font-size="13" fill="#e6edf3">Its instruction file (AGENTS.md, CLAUDE.md or copilot-instructions.md)</text>
+<text x="221" y="327" font-size="13" fill="#e6edf3">tells it to search session memory before it repeats earlier work.</text>
+<line x1="323" y1="427" x2="518" y2="427" stroke="#c9d1d9" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="420" y="417" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke"><tspan font-family="ui-monospace, SFMono-Regular, Consolas, Menlo, monospace" font-size="12" fill="#79c0ff">search "status of the billing-export refactor"</tspan></text>
+<line x1="524" y1="487" x2="718" y2="487" stroke="#c9d1d9" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="620" y="460" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">query the recent</text>
+<text x="620" y="477" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">and archive indexes</text>
+<line x1="716" y1="530" x2="522" y2="530" stroke="#8b949e" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#ahm)"/>
+<text x="620" y="520" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">ranked passages</text>
+<rect x="390" y="550" width="260" height="84" rx="8" fill="#161b22" stroke="#a371f7" stroke-width="1.3"/>
+<text x="404" y="570" font-size="13" fill="#e6edf3">Drops excluded sessions and</text>
+<text x="404" y="587" font-size="13" fill="#e6edf3">this one, groups passages by</text>
+<text x="404" y="604" font-size="13" fill="#e6edf3">session, adds title and date</text>
+<text x="404" y="621" font-size="13" fill="#e6edf3">from the manifest.</text>
+<line x1="516" y1="692" x2="321" y2="692" stroke="#8b949e" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#ahm)"/>
+<text x="420" y="665" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke"><tspan font-family="ui-monospace, SFMono-Regular, Consolas, Menlo, monospace" font-size="12" fill="#79c0ff">== &lt;session id&gt; | client | last activity | title</tspan></text>
+<text x="420" y="682" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">and the best-matching excerpts, grouped by session</text>
+<line x1="323" y1="781" x2="518" y2="781" stroke="#c9d1d9" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="420" y="771" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke"><tspan font-family="ui-monospace, SFMono-Regular, Consolas, Menlo, monospace" font-size="12" fill="#79c0ff">show &lt;session id&gt; --last 15</tspan></text>
+<line x1="524" y1="841" x2="919" y2="841" stroke="#c9d1d9" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="721" y="814" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">resolve the ID in the manifest,</text>
+<text x="721" y="831" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">open that transcript</text>
+<line x1="917" y1="884" x2="522" y2="884" stroke="#8b949e" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#ahm)"/>
+<text x="721" y="874" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">messages</text>
+<line x1="516" y1="944" x2="321" y2="944" stroke="#8b949e" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#ahm)"/>
+<text x="420" y="917" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">the last 15 messages</text>
+<text x="420" y="934" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">(or <tspan font-family="ui-monospace, SFMono-Regular, Consolas, Menlo, monospace" font-size="12" fill="#79c0ff">--around "regex"</tspan>)</text>
+<line x1="323" y1="1033" x2="518" y2="1033" stroke="#c9d1d9" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="420" y="1023" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke"><tspan font-family="ui-monospace, SFMono-Regular, Consolas, Menlo, monospace" font-size="12" fill="#79c0ff">find BillingExport.cs</tspan></text>
+<line x1="524" y1="1093" x2="1120" y2="1093" stroke="#c9d1d9" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="821" y="1066" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">scan the Codex, Claude, Copilot and VS Code</text>
+<text x="821" y="1083" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">stores in parallel: whole words, tool inputs too</text>
+<line x1="1118" y1="1136" x2="522" y2="1136" stroke="#8b949e" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#ahm)"/>
+<text x="821" y="1126" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">matching sessions</text>
+<line x1="516" y1="1196" x2="321" y2="1196" stroke="#8b949e" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#ahm)"/>
+<text x="420" y="1169" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">sessions newest first,</text>
+<text x="420" y="1186" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">one excerpt each</text>
+<line x1="315" y1="1302" x2="120" y2="1302" stroke="#8b949e" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#ahm)"/>
+<text x="219" y="1275" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">“Last worked on in a Copilot CLI session on Oct 28: the</text>
+<text x="219" y="1292" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">refactor is merged, tests remain. Shall I continue?”</text>
+</svg>

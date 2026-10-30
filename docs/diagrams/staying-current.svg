@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1006" width="1240" height="1006" role="img" aria-labelledby="t d" font-family="'Segoe UI', -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif">
+<title id="t">How memory stays current</title>
+<desc id="d">Sequence diagram of one watcher cycle: capture changed sessions from the native stores into the corpus and manifest, choose the recent or archive tier, rebuild with LEANN .NET, validate with the canary, publish, and restart the search server.</desc>
+<defs>
+<marker id="ah" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="#c9d1d9"/></marker>
+<marker id="ahm" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="#8b949e"/></marker>
+</defs>
+<rect width="1240" height="1006" fill="#0d1117"/>
+<text x="30" y="44" font-size="22" font-weight="600" fill="#e6edf3">How memory stays current</text>
+<text x="30" y="70" font-size="13" fill="#8b949e">The watcher runs about once a minute, and again whenever a build finishes.</text>
+<text x="30" y="88" font-size="13" fill="#8b949e">A changed session is searchable once its recent build is published.</text>
+<rect x="30" y="186" width="1180" height="30" rx="6" fill="#161b22"/><text x="44" y="206" font-size="13" font-weight="600" fill="#e6edf3">1   Capture</text>
+<rect x="30" y="412" width="1180" height="30" rx="6" fill="#161b22"/><text x="44" y="432" font-size="13" font-weight="600" fill="#e6edf3">2   Decide which tier needs a build</text>
+<rect x="30" y="543" width="1180" height="30" rx="6" fill="#161b22"/><text x="44" y="563" font-size="13" font-weight="600" fill="#e6edf3">3   Build and publish</text>
+<rect x="30" y="769" width="1180" height="30" rx="6" fill="#161b22"/><text x="44" y="789" font-size="13" font-weight="600" fill="#e6edf3">4   Serve</text>
+<line x1="118" y1="164" x2="118" y2="986" stroke="#30363d" stroke-width="1.4" stroke-dasharray="3 5"/>
+<line x1="319" y1="164" x2="319" y2="986" stroke="#30363d" stroke-width="1.4" stroke-dasharray="3 5"/>
+<line x1="520" y1="164" x2="520" y2="986" stroke="#30363d" stroke-width="1.4" stroke-dasharray="3 5"/>
+<line x1="720" y1="164" x2="720" y2="986" stroke="#30363d" stroke-width="1.4" stroke-dasharray="3 5"/>
+<line x1="921" y1="164" x2="921" y2="986" stroke="#30363d" stroke-width="1.4" stroke-dasharray="3 5"/>
+<line x1="1122" y1="164" x2="1122" y2="986" stroke="#30363d" stroke-width="1.4" stroke-dasharray="3 5"/>
+<rect x="30" y="100" width="176" height="64" rx="10" fill="#161b22" stroke="#f0883e" stroke-width="1.8"/><text x="118" y="126" text-anchor="middle" font-size="14" font-weight="600" fill="#e6edf3">Native stores</text><text x="118" y="146" text-anchor="middle" font-size="11.5" fill="#8b949e">the assistants' own files</text>
+<rect x="231" y="100" width="176" height="64" rx="10" fill="#161b22" stroke="#a371f7" stroke-width="1.8"/><text x="319" y="126" text-anchor="middle" font-size="14" font-weight="600" fill="#e6edf3">Watcher</text><text x="319" y="146" text-anchor="middle" font-size="11.5" fill="#8b949e">SessionMemory run</text>
+<rect x="432" y="100" width="176" height="64" rx="10" fill="#161b22" stroke="#3fb950" stroke-width="1.8"/><text x="520" y="126" text-anchor="middle" font-size="14" font-weight="600" fill="#e6edf3">Corpus + manifest</text><text x="520" y="146" text-anchor="middle" font-size="11.5" fill="#8b949e">one transcript per session</text>
+<rect x="632" y="100" width="176" height="64" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="1.8"/><text x="720" y="126" text-anchor="middle" font-size="14" font-weight="600" fill="#e6edf3">LEANN .NET</text><text x="720" y="146" text-anchor="middle" font-size="11.5" fill="#8b949e">embeds and builds</text>
+<rect x="833" y="100" width="176" height="64" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="1.8"/><text x="921" y="126" text-anchor="middle" font-size="14" font-weight="600" fill="#e6edf3">Indexes</text><text x="921" y="146" text-anchor="middle" font-size="11.5" fill="#8b949e">recent · archive</text>
+<rect x="1034" y="100" width="176" height="64" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="1.8"/><text x="1122" y="126" text-anchor="middle" font-size="14" font-weight="600" fill="#e6edf3">Search server</text><text x="1122" y="146" text-anchor="middle" font-size="11.5" fill="#8b949e">answers in about 0.2 s</text>
+<line x1="315" y1="270" x2="120" y2="270" stroke="#c9d1d9" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="219" y="243" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">list files, fingerprint</text>
+<text x="219" y="260" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">each client</text>
+<line x1="122" y1="330" x2="317" y2="330" stroke="#8b949e" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#ahm)"/>
+<text x="219" y="303" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">changed or failed</text>
+<text x="219" y="320" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">clients are parsed again</text>
+<line x1="323" y1="390" x2="518" y2="390" stroke="#c9d1d9" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="420" y="363" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">write changed transcripts, delete</text>
+<text x="420" y="380" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">stale ones, save the manifest</text>
+<rect x="207" y="456" width="625" height="67" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1.3"/>
+<text x="221" y="476" font-size="13" fill="#e6edf3">Recent: sessions changed since the archive. Waits for 90 s of quiet (5 min at most).</text>
+<text x="221" y="493" font-size="13" fill="#e6edf3">Archive: everything. Only when the recent text passes 4 MB, none exists yet,</text>
+<text x="221" y="510" font-size="13" fill="#e6edf3">or exclusions need purging.</text>
+<line x1="323" y1="627" x2="718" y2="627" stroke="#c9d1d9" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="520" y="600" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">stage the documents,</text>
+<text x="520" y="617" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">rebuild the tier</text>
+<line x1="724" y1="687" x2="919" y2="687" stroke="#c9d1d9" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="821" y="660" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">embed passages</text>
+<text x="821" y="677" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">with the local model</text>
+<line x1="323" y1="747" x2="919" y2="747" stroke="#c9d1d9" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="620" y="720" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">check the candidate for the canary,</text>
+<text x="620" y="737" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">publish it, check again</text>
+<line x1="323" y1="836" x2="1120" y2="836" stroke="#c9d1d9" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="721" y="826" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">restart it so it loads the new index</text>
+<line x1="1118" y1="879" x2="923" y2="879" stroke="#c9d1d9" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="1022" y="869" text-anchor="middle" font-size="13" fill="#e6edf3" stroke="#0d1117" stroke-width="5" stroke-linejoin="round" paint-order="stroke">load recent + archive</text>
+<rect x="809" y="899" width="401" height="67" rx="8" fill="#161b22" stroke="#58a6ff" stroke-width="1.3"/>
+<text x="823" y="919" font-size="13" fill="#e6edf3">A search is then answered by the</text>
+<text x="823" y="936" font-size="13" fill="#e6edf3">running server in about 0.2 s,</text>
+<text x="823" y="953" font-size="13" fill="#e6edf3">not 13 s for a fresh process.</text>
+</svg>
