@@ -11,8 +11,12 @@ $script:installerText = [IO.File]::ReadAllText((Resolve-Path $Installer))
 $modelCommand = "& (Join-Path `$LeannDir 'leann-dotnet.exe') --setup --model facebook/contriever"
 if (-not $script:installerText.Contains($modelCommand)) { throw 'Installer model command changed' }
 $script:installerText = $script:installerText.Replace($modelCommand, "throw 'Model download is forbidden in tests'")
+$indexCommand = '& $Exe run --once --progress'
+if (-not $script:installerText.Contains($indexCommand)) { throw 'Installer indexing command changed' }
+$script:installerText = $script:installerText.Replace($indexCommand, 'Invoke-MockIndex')
 $allowed = @('ConvertFrom-Json','ConvertTo-Json','Copy-Item','Disable-ScheduledTask','dotnet','Enable-ScheduledTask','Export-ScheduledTask','ForEach-Object','Get-CimInstance','Get-Content','Get-Date','Get-ScheduledTask','Invoke-RestMethod','Join-Path','New-Item','New-ScheduledTaskAction','New-ScheduledTaskSettingsSet','New-ScheduledTaskTrigger','New-TimeSpan','Out-Null','Register-ScheduledTask','Remove-Item','Select-String','Set-Content','Split-Path','Start-ScheduledTask','Stop-Owned','Stop-Process','Stop-ScheduledTask','Stop-Watcher','Test-Path','Unregister-ScheduledTask','Wait-Process','Where-Object','Write-InstallState','Write-Output')
 $allowed += @('Assert-BinaryBackup', 'New-Object', 'Remove-BinaryBackup', 'Remove-InstallDirectory', 'Restore-Install')
+$allowed += 'Invoke-MockIndex'
 $parsed = [Management.Automation.Language.Parser]::ParseInput($script:installerText, [ref]$null, [ref]$null)
 foreach ($command in $parsed.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true)) {
     $name = $command.GetCommandName()
@@ -54,6 +58,15 @@ function dotnet {
     }
 }
 function Get-CimInstance { @() }
+function Invoke-MockIndex {
+    $script:indexed = $true
+    $global:LASTEXITCODE = 0
+    if ($script:failure -eq 'index') {
+        $script:failureHit = $true
+        $global:LASTEXITCODE = 1
+    }
+    'Mock indexing output'
+}
 function Invoke-RestMethod { throw 'Network access is forbidden' }
 function Invoke-WebRequest { throw 'Network access is forbidden' }
 function Stop-Process { throw 'Real process control is forbidden' }
@@ -75,6 +88,7 @@ function New-ScheduledTaskTrigger { 'trigger' }
 function New-ScheduledTaskSettingsSet { 'settings' }
 function Register-ScheduledTask {
     param($TaskName, $Action, $Trigger, $Settings, $Xml, [switch]$Force)
+    if (-not $Xml -and -not $script:indexed) { throw 'Task registered before initial indexing' }
     if ($Xml -and $script:cleanupFail) { $script:cleanupFail = $false; throw 'Injected cleanup failure' }
     $script:task = [pscustomobject]@{ State = 'Ready'; Xml = $Xml }
     Fail-Once 'register'
@@ -106,7 +120,10 @@ function Set-Content {
         Microsoft.PowerShell.Management\Set-Content -Path $Path -Value $Value -Encoding $Encoding -NoNewline:$NoNewline
     }
 }
-function Invoke-Install([switch]$Rollback) { & $script:runInstaller -Rollback:$Rollback | Out-Null }
+function Invoke-Install([switch]$Rollback) {
+    $script:indexed = $false
+    & $script:runInstaller -Rollback:$Rollback | Out-Null
+}
 function Expect-Failure([string]$Point, [switch]$Rollback) {
     $script:failure = $Point
     $script:failureHit = $false
@@ -138,13 +155,14 @@ function Reset-Fixture {
     $script:stateWrites = 0
     $script:cleanupFail = $false
     $script:buildNumber = 1
+    $script:indexed = $false
 }
 $agents = Join-Path $script:testHome '.codex\AGENTS.md'
 $claude = Join-Path $script:testHome '.claude\CLAUDE.md'
 $state = Join-Path $script:localData 'LeannSessionMemory\state\install.json'
 $original = "Custom $([char]0x03A9) instructions" + [Environment]::NewLine
 try {
-    foreach ($point in @('second-instruction', 'register', 'start', 'state', 'final-state')) {
+    foreach ($point in @('index', 'second-instruction', 'register', 'start', 'state', 'final-state')) {
         Reset-Fixture
         [IO.File]::WriteAllText($agents, $original, (New-Object Text.UTF8Encoding $true))
         $bytes = [IO.File]::ReadAllBytes($agents)

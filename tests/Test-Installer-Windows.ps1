@@ -33,7 +33,7 @@ function Invoke-Setup([switch]$Rollback) {
 function Wait-Ready([int]$PreviousPid = 0) {
     $timer = [Diagnostics.Stopwatch]::StartNew()
     $watcherPath = Join-Path $installRoot 'state\watcher.json'
-    $archivePath = Join-Path $installRoot 'state\archive-state.json'
+    $archivePath = Join-Path $installRoot 'state\archive-conversations-v1-state.json'
     while ($timer.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
         if ((Test-Path $watcherPath) -and (Test-Path $archivePath)) {
             try {
@@ -89,11 +89,12 @@ try {
     Assert-Test (-not (Test-Path (Join-Path $profileRoot '.leann\models\facebook-contriever\model.onnx'))) 'model is absent before first installation'
     Invoke-Setup
     Assert-Test (Test-Path $installState) 'first installation writes committed state'
+    Assert-Search
     Assert-Test (Test-Path (Join-Path $profileRoot '.leann\models\facebook-contriever\model.onnx')) 'first installation downloads the model'
     Assert-Test ($null -ne (Get-ScheduledTask -TaskName $taskName)) 'first installation registers the task'
     Assert-Instructions
     $firstPid = Wait-Ready
-    Assert-Test ($firstPid -gt 0) 'the scheduled task starts a healthy watcher and builds the first index'
+    Assert-Test ($firstPid -gt 0) 'the scheduled task starts a healthy watcher'
     Assert-Search
     & $memoryExe self-test
     Assert-Test ($LASTEXITCODE -eq 0) 'installed executable passes self-test'

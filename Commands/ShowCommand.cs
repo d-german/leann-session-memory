@@ -1,4 +1,5 @@
 ﻿using System.Collections.Immutable;
+using System.Globalization;
 using CSharpFunctionalExtensions;
 
 namespace SessionMemory.Commands
@@ -28,7 +29,7 @@ namespace SessionMemory.Commands
                 .Match(_ => 0, CommandLine.Fail);
         }
 
-        // Reads --last, --context, --max and --chars in this order, so the first bad number is the one reported, then --around and the session.
+        // Reads numeric options before resolving the session.
         private Result<ShowRequest, CliError> Options(CommandArguments arguments, bool current) =>
             arguments.Number("--last", 10)
                 .Map(last => new ShowRequest
@@ -48,14 +49,35 @@ namespace SessionMemory.Commands
                 {
                     Chars = Math.Clamp(chars, 200, 20_000)
                 }))
+                .Bind(request => MessageNumber(arguments).Map(number => request with { MessageNumber = number }))
+                .Bind(request => Offset(arguments).Bind(offset =>
+                    offset is not null && request.MessageNumber is null
+                        ? Result.Failure<ShowRequest, CliError>(new CliError("--offset requires --message.", 2))
+                        : Result.Success<ShowRequest, CliError>(request with { Offset = offset ?? 0 })))
                 .Map(request => request with
                 {
                     Around = arguments.Option("--around").GetValueOrDefault()
                 })
+                .Ensure(request => request.MessageNumber is null || request.Around is null,
+                    new CliError("Use either --message or --around, not both.", 2))
                 .Bind(request => Target(arguments.Operands, current).Map(id => request with
                 {
                     Id = id
                 }));
+
+        private static Result<int?, CliError> MessageNumber(CommandArguments arguments) =>
+            arguments.Option("--message").Match(
+                value => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number) && number > 0
+                    ? Result.Success<int?, CliError>(number)
+                    : Result.Failure<int?, CliError>(new CliError("--message requires a positive whole number.", 2)),
+                () => Result.Success<int?, CliError>(null));
+
+        private static Result<int?, CliError> Offset(CommandArguments arguments) =>
+            arguments.Option("--offset").Match(
+                value => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number) && number >= 0
+                    ? Result.Success<int?, CliError>(number)
+                    : Result.Failure<int?, CliError>(new CliError("--offset requires a nonnegative whole number.", 2)),
+                () => Result.Success<int?, CliError>(null));
 
         // The session to show: the ID given, or with --current the session this agent runs in.
         private Result<string, CliError> Target(ImmutableArray<string> operands, bool current) =>

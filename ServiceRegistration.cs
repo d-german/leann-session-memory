@@ -22,6 +22,8 @@ namespace SessionMemory
                     .AddSingleton<SearchServer>()
                     .AddSingleton<Indexer>()
                     .AddSingleton<SessionReader>()
+                    .AddSingleton<ClaimVerifier>()
+                    .AddSingleton<HistoryNavigation>()
                     .AddSingleton<StatusReport>()
                     .AddTransient<Watcher>();
         }

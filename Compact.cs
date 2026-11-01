@@ -40,6 +40,17 @@ namespace SessionMemory
         // Works on a whole transcript or on a search passage, which may start or end inside a header.
         public static ImmutableArray<Segment> Segments(string text)
         {
+            if (text.StartsWith("# Local session transcript\n", StringComparison.Ordinal)
+                || text.Contains("\ntext_length: ", StringComparison.Ordinal))
+            {
+                try
+                {
+                    var complete = Transcript.SourceMessages(text);
+                    if (!complete.IsEmpty) return complete;
+                }
+                // Search passages can end inside a message; exact source readers remain strict.
+                catch (InvalidDataException) { }
+            }
             var segments = ImmutableArray.CreateBuilder<Segment>();
             var lines = text.Replace("\r\n", "\n").Split('\n');
             var (number, role, timestamp) = (0, "", "");
@@ -67,7 +78,7 @@ namespace SessionMemory
             }
         }
 
-        // "[#412 assistant 2026-04-30 15:12]"; "[...]" marks text continuing from a message that starts before the passage.
+        // UTC labels let excerpts from different clients be compared without losing their offsets.
         public static string Label(Segment segment) =>
             segment.Role.Length == 0
                 ? "[...]"
@@ -80,17 +91,18 @@ namespace SessionMemory
             "== " + string.Join(" | ", parts.Where(part => !string.IsNullOrWhiteSpace(part)));
 
         public static string Time(string timestamp) =>
-            timestamp.Length >= 16 && timestamp[10] == 'T' ? $"{timestamp[..10]} {timestamp[11..16]}" : timestamp;
+            DateTimeOffset.TryParse(timestamp, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var date)
+                ? date.UtcDateTime.ToString("yyyy-MM-dd HH:mm 'UTC'", CultureInfo.InvariantCulture) : timestamp;
 
         // Typographic punctuation becomes ASCII and symbols or emoji are dropped; letters in other scripts are kept.
-        public static string Plain(string text)
+        public static string Plain(string text, bool preserveSymbols = false)
         {
             var builder = new StringBuilder(text.Length);
             foreach (var character in text)
             {
                 if (character <= 0x7F) builder.Append(character);
                 else if (Ascii.TryGetValue(character, out var replacement)) builder.Append(replacement);
-                else if (char.IsLetterOrDigit(character)) builder.Append(character);
+                else if (preserveSymbols || char.IsLetterOrDigit(character)) builder.Append(character);
             }
             return builder.ToString();
         }

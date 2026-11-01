@@ -8,7 +8,7 @@ namespace SessionMemory
     /// <summary>The state the status command reports: the watcher, manifest and index states without their document lists, and the exclusions.</summary>
     sealed internal class StatusReport
     {
-        private static readonly ImmutableArray<string> StateFiles = ["watcher", "manifest", "archive-state", "recent-state"];
+        private static readonly ImmutableArray<string> StateFiles = ["watcher", "manifest", "archive-state", "recent-state", "archive-progress", "recent-progress"];
 
         private readonly string _root;
         private readonly ExclusionService _exclusions;
@@ -23,9 +23,16 @@ namespace SessionMemory
         public JsonObject Read()
         {
             var status = new JsonObject();
+            var current = Indexer.ActiveCurrentFormat(_root);
             foreach (var name in StateFiles)
             {
-                var node = Store.LoadNode(Path.Combine(_root, "state", $"{name}.json"));
+                var file = name switch
+                {
+                    "archive-state" => Indexer.StateFileName("archive", current),
+                    "recent-state" => Indexer.StateFileName("recent", current),
+                    _ => $"{name}.json"
+                };
+                var node = Store.LoadNode(Path.Combine(_root, "state", file));
                 (node as JsonObject)?.Remove("documents");
                 status[name] = node;
             }

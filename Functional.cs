@@ -32,7 +32,7 @@ namespace SessionMemory
             {
                 return Result.Success<T, string>(action());
             }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException)
             {
                 return Result.Failure<T, string>(Describe(error));
             }
@@ -45,7 +45,7 @@ namespace SessionMemory
                 action();
                 return UnitResult.Success<string>();
             }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException)
             {
                 return UnitResult.Failure(Describe(error));
             }

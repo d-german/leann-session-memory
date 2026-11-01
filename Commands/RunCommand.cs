@@ -2,7 +2,7 @@
 
 namespace SessionMemory.Commands
 {
-    /// <summary>run [--once] [--force]: the background watcher, or with --once a single refresh.</summary>
+    /// <summary>run [--once] [--force] [--progress]: the watcher, or with --once a single refresh.</summary>
     sealed internal class RunCommand : ICommand
     {
         private readonly Watcher _watcher;
@@ -17,6 +17,6 @@ namespace SessionMemory.Commands
         public bool RequiresArguments => false;
 
         public int Execute(CommandArguments arguments) =>
-            _watcher.RunExclusive(arguments.Flag("--once"), arguments.Flag("--force")).Match(exitCode => exitCode, CommandLine.Fail);
+            _watcher.RunExclusive(arguments.Flag("--once"), arguments.Flag("--force"), arguments.Flag("--progress")).Match(exitCode => exitCode, CommandLine.Fail);
     }
 }

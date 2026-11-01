@@ -86,7 +86,7 @@ namespace SessionMemory
     /// <summary>Turns transcripts into the Markdown corpus LEANN indexes, rewriting only documents that changed.</summary>
     sealed internal class Corpus
     {
-        private const int ManifestVersion = 3;
+        private const int ManifestVersion = 4;
         private static readonly UTF8Encoding NoBom = new(false);
 
         private readonly ClientContext _context;

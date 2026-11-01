@@ -67,7 +67,7 @@ namespace SessionMemory
         public Dictionary<string, long> Stats { get; init; }
     }
 
-    /// <summary>Renders documents exactly like the original Python bridge, so corpus hashes stay comparable.</summary>
+    /// <summary>Writes readable transcripts with explicit message lengths and reads their original message boundaries.</summary>
     internal static partial class Transcript
     {
         // Ticks and whole seconds from the Unix epoch to DateTime.MaxValue; a later time has no DateTime, so it gives no timestamp.
@@ -76,6 +76,7 @@ namespace SessionMemory
         private static readonly Regex ManyNewlines = MyRegex();
         private static readonly Regex UnsafeName = MyRegex1();
         private static readonly Regex Whitespace = MyRegex2();
+        private static readonly Regex MessageHeader = new(@"(?m)^## Message ([0-9]+) part ([0-9]+)/([0-9]+)[ \t]*$", RegexOptions.CultureInvariant);
 
         public static string Normalize(string value)
         {
@@ -105,9 +106,9 @@ namespace SessionMemory
             {
                 var cut = Math.Max(LastIndexOf(points, start, limit, '\n'), LastIndexOf(points, start, limit, ' '));
                 if (cut < limit / 2) cut = limit;
-                var (partStart, partEnd) = Trim(points, start, start + cut);
-                parts.Add(FromCodePoints(points.AsSpan(partStart, partEnd - partStart)));
-                (start, end) = Trim(points, start + cut, end);
+                if (cut < limit) cut++;
+                parts.Add(FromCodePoints(points.AsSpan(start, cut)));
+                start += cut;
             }
             if (end > start) parts.Add(FromCodePoints(points.AsSpan(start, end - start)));
             return parts.DrainToImmutable();
@@ -146,7 +147,7 @@ namespace SessionMemory
                         .. identity,
                         $"message_id: {message.Id}", $"role: {message.Role}",
                         $"timestamp: {message.Timestamp}", $"source_ref: {sourceRef}",
-                        "text:", parts[part], ""
+                        $"text_length: {parts[part].Length}", "text:", parts[part], ""
                     ]);
                 }
                 kept++;
@@ -199,11 +200,56 @@ namespace SessionMemory
             return -1;
         }
 
-        private static (int Start, int End) Trim(int[] points, int start, int end)
+        // Lengths frame new transcripts; legacy transcripts retain their original newline-joined parts.
+        internal static ImmutableArray<Compact.Segment> SourceMessages(string text)
         {
-            while (start < end && IsSpace(points[start])) start++;
-            while (end > start && IsSpace(points[end - 1])) end--;
-            return (start, end);
+            text = text.Replace("\r\n", "\n", StringComparison.Ordinal);
+            var headers = MessageHeader.Matches(text);
+            var messages = ImmutableArray.CreateBuilder<Compact.Segment>();
+            var previousPart = 0;
+            var previousParts = 0;
+            var previousFramed = false;
+            for (var i = 0; i < headers.Count; i++)
+            {
+                var header = headers[i];
+                if (!int.TryParse(header.Groups[1].Value, out var number)
+                    || !int.TryParse(header.Groups[2].Value, out var part)
+                    || !int.TryParse(header.Groups[3].Value, out var parts)) continue;
+                var start = header.Index + header.Length;
+                if (start < text.Length && text[start] == '\n') start++;
+                var end = i + 1 < headers.Count ? headers[i + 1].Index : text.Length;
+                var marker = text.IndexOf("text:\n", start, end - start, StringComparison.Ordinal);
+                if (marker < 0 || marker > start && text[marker - 1] != '\n') continue;
+                var role = "";
+                var stamp = "";
+                int? length = null;
+                foreach (var line in text[start..marker].Split('\n'))
+                {
+                    if (line.StartsWith("role: ", StringComparison.Ordinal)) role = line[6..];
+                    else if (line.StartsWith("timestamp: ", StringComparison.Ordinal)) stamp = line[11..];
+                    else if (line.StartsWith("text_length: ", StringComparison.Ordinal))
+                    {
+                        if (!int.TryParse(line.AsSpan(13), NumberStyles.None, CultureInfo.InvariantCulture, out var value))
+                            throw new InvalidDataException("Invalid transcript message length.");
+                        length = value;
+                    }
+                }
+                var bodyStart = marker + 6;
+                if (length is { } count)
+                {
+                    if (count > text.Length - bodyStart) throw new InvalidDataException("Truncated transcript message.");
+                    end = bodyStart + count;
+                    if (end < text.Length && text[end] != '\n') throw new InvalidDataException("Invalid transcript message boundary.");
+                    while (i + 1 < headers.Count && headers[i + 1].Index < end) i++;
+                }
+                var body = length is null ? text[bodyStart..end].TrimEnd('\n') : text[bodyStart..end];
+                if (messages.Count > 0 && part > 1 && part == previousPart + 1 && parts == previousParts
+                    && messages[^1] is var previous && previous.Number == number && previous.Role == role && previous.Timestamp == stamp)
+                    messages[^1] = previous with { Text = previous.Text + (length is not null && previousFramed ? "" : "\n") + body };
+                else messages.Add(new Compact.Segment(number, role, stamp, body));
+                (previousPart, previousParts, previousFramed) = (part, parts, length is not null);
+            }
+            return messages.ToImmutable();
         }
 
         private static int[] CodePoints(string value)

@@ -32,7 +32,7 @@ start_watcher() {
 wait_ready() {
     local deadline=$((SECONDS + TIMEOUT)) pid health
     while [ "$SECONDS" -lt "$deadline" ]; do
-        if [ -f "$ROOT/state/watcher.json" ] && [ -f "$ROOT/state/archive-state.json" ]; then
+        if [ -f "$ROOT/state/watcher.json" ] && [ -f "$ROOT/state/archive-conversations-v1-state.json" ]; then
             pid="$(jq -r '.process_id' "$ROOT/state/watcher.json" 2> /dev/null || echo 0)"
             health="$(curl -fsS --max-time 3 http://localhost:57392/health 2> /dev/null | jq -r '.indexesDir' 2> /dev/null || true)"
             if kill -0 "$pid" 2> /dev/null && [ "$health" = "$ROOT/.leann/indexes" ] && [ "$(jq '.errors | length' "$ROOT/state/watcher.json")" = 0 ]; then return 0; fi
@@ -83,6 +83,7 @@ printf 'Keep my café instructions.\n' > "$CLAUDE"
 
 check 'model is absent before first installation' test ! -e "$HOME/.leann/models/facebook-contriever/model.onnx"
 "$SOURCE/install-sessionmemory.sh" --no-start
+check 'no-start skips the initial index' test ! -e "$ROOT/state/archive-conversations-v1-state.json"
 check 'first installation downloads the model' test -f "$HOME/.leann/models/facebook-contriever/model.onnx"
 check 'first installation writes the SessionMemory launcher' test -x "$EXE"
 check 'first installation writes the private LEANN launcher' test -x "$ROOT/leann/leann-dotnet"

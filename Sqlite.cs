@@ -6,7 +6,7 @@ using CSharpFunctionalExtensions;
 
 namespace SessionMemory
 {
-    /// <summary>Read-only queries through the SQLite engine the operating system ships (winsqlite3.dll on Windows, libsqlite3 on macOS and Linux).</summary>
+    /// <summary>Queries through the operating system SQLite engine, read-only unless explicitly created writable.</summary>
     sealed internal partial class SqliteReader : IDisposable
     {
         private const string Library = "winsqlite3.dll";
@@ -14,6 +14,8 @@ namespace SessionMemory
         private const int Row = 100;
         private const int Done = 101;
         private const int OpenReadOnly = 0x1;
+        private const int OpenReadWrite = 0x2;
+        private const int OpenCreate = 0x4;
         private const int OpenUri = 0x40;
         private const int IntegerColumn = 1;
         private const int FloatColumn = 2;
@@ -23,10 +25,16 @@ namespace SessionMemory
 
         static SqliteReader() => NativeLibrary.SetDllImportResolver(typeof(SqliteReader).Assembly, Resolve);
 
-        public SqliteReader(string path)
+        public SqliteReader(string path) : this(path, false)
         {
-            var uri = Encoding.UTF8.GetBytes(new Uri(path).AbsoluteUri + "?mode=ro\0");
-            if (sqlite3_open_v2(uri, out _handle, OpenReadOnly | OpenUri, IntPtr.Zero) == Ok && sqlite3_busy_timeout(_handle, 5000) == Ok) return;
+        }
+
+        private SqliteReader(string path, bool writable)
+        {
+            var name = writable && path == ":memory:" ? path : new Uri(path).AbsoluteUri + (writable ? "?mode=rwc" : "?mode=ro");
+            var uri = Encoding.UTF8.GetBytes(name + "\0");
+            var flags = writable ? OpenReadWrite | OpenCreate | OpenUri : OpenReadOnly | OpenUri;
+            if (sqlite3_open_v2(uri, out _handle, flags, IntPtr.Zero) == Ok && sqlite3_busy_timeout(_handle, 5000) == Ok) return;
             var message = ErrorMessage();
             Dispose();
             throw new IOException($"Cannot open {path}: {message}");
@@ -35,23 +43,42 @@ namespace SessionMemory
         // A database that cannot be opened is a failure carrying the constructor's "IOException: Cannot open ..." text.
         public static Result<SqliteReader, string> Open(string path) => Attempt.Io(() => new SqliteReader(path));
 
+        public static SqliteReader Create(string path) => new(path, true);
+
         // Windows keeps the default lookup of winsqlite3.dll; elsewhere the same imports bind to the system SQLite.
         private static IntPtr Resolve(string name, Assembly assembly, DllImportSearchPath? searchPath) =>
             name != Library || OperatingSystem.IsWindows()
                 ? IntPtr.Zero
                 : NativeLibrary.Load(OperatingSystem.IsMacOS() ? "libsqlite3.dylib" : "libsqlite3.so.0", assembly, searchPath);
 
-        public IEnumerable<object?[]> Query(string sql)
+        public IEnumerable<object?[]> Query(string sql, params object?[] parameters)
         {
-            if (sqlite3_prepare16_v2(_handle, sql, -1, out var statement, IntPtr.Zero) != Ok)
-                throw new IOException(ErrorMessage());
+            var statement = IntPtr.Zero;
             try
             {
+                if (sqlite3_prepare16_v2(_handle, sql, -1, out statement, IntPtr.Zero) != Ok)
+                    throw new IOException(parameters.Length == 0 ? ErrorMessage() : "SQLite statement preparation failed.");
+                if (sqlite3_bind_parameter_count(statement) != parameters.Length)
+                    throw new IOException("SQLite parameter count does not match the statement.");
+                for (var i = 0; i < parameters.Length; i++)
+                {
+                    var status = parameters[i] switch
+                    {
+                        null => sqlite3_bind_null(statement, i + 1),
+                        string value => sqlite3_bind_text16(statement, i + 1, value, checked(value.Length * 2), new IntPtr(-1)),
+                        bool value => sqlite3_bind_int64(statement, i + 1, value ? 1 : 0),
+                        int value => sqlite3_bind_int64(statement, i + 1, value),
+                        long value => sqlite3_bind_int64(statement, i + 1, value),
+                        double value => sqlite3_bind_double(statement, i + 1, value),
+                        _ => throw new IOException("Unsupported SQLite parameter type.")
+                    };
+                    if (status != Ok) throw new IOException("SQLite parameter binding failed.");
+                }
                 while (true)
                 {
                     var step = sqlite3_step(statement);
                     if (step == Done) yield break;
-                    if (step != Row) throw new IOException(ErrorMessage());
+                    if (step != Row) throw new IOException(parameters.Length == 0 ? ErrorMessage() : "SQLite statement execution failed.");
                     var row = new object?[sqlite3_column_count(statement)];
                     for (var column = 0; column < row.Length; column++)
                     {
@@ -69,20 +96,20 @@ namespace SessionMemory
             finally
             {
                 // Finalize fails only by repeating the error of the last step, which is already being thrown.
-                _ = sqlite3_finalize(statement);
+                if (statement != IntPtr.Zero) _ = sqlite3_finalize(statement);
             }
         }
 
         // Materializes every row (the statement is finalized before returning), so use it for small results only.
-        public Result<ImmutableArray<object?[]>, string> TryQuery(string sql) => Attempt.Io(() => Query(sql).ToImmutableArray());
+        public Result<ImmutableArray<object?[]>, string> TryQuery(string sql, params object?[] parameters) => Attempt.Io(() => Query(sql, parameters).ToImmutableArray());
 
         // Probes the main schema the way SQLite resolves table names (ASCII case-insensitive); real I/O errors still throw.
         public bool HasTable(string name) =>
             Query($"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '{name.Replace("'", "''", StringComparison.Ordinal)}' COLLATE NOCASE").Any();
 
-        public void Execute(string sql)
+        public void Execute(string sql, params object?[] parameters)
         {
-            foreach (var _ in Query(sql))
+            foreach (var _ in Query(sql, parameters))
             {
             }
         }
@@ -109,6 +136,21 @@ namespace SessionMemory
 
         [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf16)]
         private static partial int sqlite3_prepare16_v2(IntPtr database, string sql, int bytes, out IntPtr statement, IntPtr tail);
+
+        [LibraryImport(Library)]
+        private static partial int sqlite3_bind_parameter_count(IntPtr statement);
+
+        [LibraryImport(Library)]
+        private static partial int sqlite3_bind_null(IntPtr statement, int index);
+
+        [LibraryImport(Library)]
+        private static partial int sqlite3_bind_int64(IntPtr statement, int index, long value);
+
+        [LibraryImport(Library)]
+        private static partial int sqlite3_bind_double(IntPtr statement, int index, double value);
+
+        [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf16)]
+        private static partial int sqlite3_bind_text16(IntPtr statement, int index, string value, int bytes, IntPtr destructor);
 
         [LibraryImport(Library)]
         private static partial int sqlite3_step(IntPtr statement);

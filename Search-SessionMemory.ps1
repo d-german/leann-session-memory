@@ -3,12 +3,18 @@
     [string]$Query,
     [ValidateRange(1, 50)]
     [int]$TopK = 8,
+    [switch]$Latest,
+    [string]$Session,
+    [string]$ExcludeTopic,
     [switch]$Current,
     [switch]$IncludeCurrent,
     [switch]$Json
 )
 
 $Options = @('--top-k', $TopK)
+if ($Latest) { $Options += '--latest' }
+if ($Session) { $Options += @('--session', $Session) }
+if ($ExcludeTopic) { $Options += @('--exclude-topic', $ExcludeTopic) }
 if ($Current) { $Options += '--current' }
 if ($IncludeCurrent) { $Options += '--include-current' }
 if ($Json) { $Options += '--json' }

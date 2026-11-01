@@ -5,10 +5,11 @@ namespace SessionMemory.Commands
     /// <summary>The usage text and the way commands write their results and failures.</summary>
     internal static class CommandLine
     {
-        public const string Usage = "Usage: SessionMemory [--root <path>] run [--once] [--force] | search <query> [--top-k <n>] [--json] [--include-current] [--current] | " +
+        public const string Usage = "Usage: SessionMemory [--root <path>] run [--once] [--force] [--progress] | search <query> [--top-k <n>] [--latest] [--json] [--include-current] [--current|--session <id>] [--exclude-topic <phrase>] | " +
                                     "find <term> [<term> ...] [--top <n>] [--session <id>] [--partial] [--json] [--include-current] [--current] [--since <time>] [--outputs] | " +
-                                    "show <session-id>|--current [--last <n>] [--around <regex>] [--context <n>] [--max <n>] [--chars <n>] | " +
-                                    "exclude <session-id> | include <session-id> | capture | status | self-test";
+                                    "show <session-id>|--current [--last <n>] [--around <regex>|--message <n> [--offset <n>]] [--context <n>] [--max <n>] [--chars <n>] | " +
+                                    "verify <claims-json-file> | timeline <literal-term> [<term> ...] [--top <n>] [--cursor <token>] [--include-current] [--json] | " +
+                                    "related <session-id> --message <n> [--top <n>] [--json] | exclude <session-id> | include <session-id> | capture | status | self-test";
 
         // A failure goes to standard error and its exit code becomes the process's.
         public static int Fail(CliError error)

@@ -31,6 +31,7 @@ namespace SessionMemory
         private DateTime? _firstUnbuilt;
         private string? _corpusHash;
         private Process? _server;
+        private bool _showProgress;
 
         public Watcher(ClientContext context, Corpus corpus, Indexer indexer, SearchServer searchServer, ExclusionService exclusions)
         {
@@ -47,23 +48,29 @@ namespace SessionMemory
 
         // Only one watcher or refresh runs at a time; a second one stops at once, a refresh with exit code 3. Every index build is validated by
         // finding the canary, so a new machine gets it before its first build.
-        public Result<int, CliError> RunExclusive(bool once, bool force)
+        public Result<int, CliError> RunExclusive(bool once, bool force, bool progress = false)
         {
             using var single = new Mutex(true, @"Local\LeannSessionMemoryWatcher", out var created);
             if (!created) return new CliError("Another SessionMemory watcher or refresh is already running.", once ? 3 : 0);
             SyntheticTranscripts.EnsureCanary(_root);
-            return RunAsync(once, force).GetAwaiter().GetResult();
+            return RunAsync(once, force, progress).GetAwaiter().GetResult();
         }
 
-        public async Task<int> RunAsync(bool once, bool force)
+        public async Task<int> RunAsync(bool once, bool force, bool progress = false)
         {
+            _showProgress = progress;
+            if (progress) Console.WriteLine("Reading session history...");
             Log(once ? "one-time refresh started" : $"watcher started, process {Environment.ProcessId}");
             while (true)
             {
                 var cycled = TryCycle(once, force);
                 if (once && !cycled) return 1;
                 force = false;
-                if (once && _running.Count == 0) return _errors.Count == 0 ? 0 : 1;
+                if (once && _running.Count == 0)
+                {
+                    if (progress) Console.WriteLine(_errors.Count == 0 ? "Ready. Indexing completed." : "Indexing failed; check status and logs for details.");
+                    return _errors.Count == 0 ? 0 : 1;
+                }
                 await WaitForWorkAsync(once);
             }
         }
@@ -76,6 +83,7 @@ namespace SessionMemory
         {
             _errors["capture"] = error;
             Log($"cycle failed: {error}");
+            if (_showProgress) Console.WriteLine($"Indexing failed: {error}");
             return false;
         }
 
@@ -98,6 +106,22 @@ namespace SessionMemory
             var archive = _indexer.LoadState("archive");
             var recent = Indexer.RecentDocuments(manifest.Documents, archive.Documents);
             var recentBytes = recent.Keys.Sum(name => manifest.Documents[name].Bytes);
+            var failedFamilies = manifest.Families.Where(pair => !pair.Value.Ok).Select(pair => $"{pair.Key}: {pair.Value.Error}").ToArray();
+            if (once && failedFamilies.Length > 0)
+            {
+                CycleFailed($"Could not read session history: {string.Join("; ", failedFamilies)}");
+                WriteStatus(capture, recent.Count, recentBytes);
+                return;
+            }
+            var conversationSources = Indexer.Visible(manifest.Documents, [.. _exclusions.LoadChecked()], null);
+            var reportedPercent = -1;
+            ConversationSearch.Prepare(_root, manifest.Documents, conversationSources, _showProgress ? (done, total) =>
+            {
+                var percent = total == 0 ? 100 : done * 100 / total;
+                if (percent == reportedPercent) return;
+                reportedPercent = percent;
+                Console.WriteLine($"Conversation index: {percent}% ({done}/{total} sessions checked)");
+            } : null);
             if (RecentBuildDue(archive, recent, recentBytes, once, force, now))
             {
                 Start(_indexer.Stage("recent", recent, manifest.CorpusHash));
@@ -159,8 +183,14 @@ namespace SessionMemory
         }
 
         // A build that throws is recorded like one that fails.
-        private Result<TierState, string> Build(StagedBuild staged) =>
-            Result.Try(() => _indexer.Build(staged), Attempt.Describe).Match(built => built, Result.Failure<TierState, string>);
+        private Result<TierState, string> Build(StagedBuild staged)
+        {
+            var progress = new IndexProgress(_root, staged.Tier, Path.GetFileName(staged.BuildRoot), _showProgress);
+            progress.Report("loading");
+            var result = Result.Try(() => _indexer.Build(staged, progress), Attempt.Describe).Match(built => built, Result.Failure<TierState, string>);
+            if (result.IsFailure) progress.Report("failed", error: result.Error);
+            return result;
+        }
 
         private void RestartServer() =>
             Result.Try(() =>
@@ -198,6 +228,7 @@ namespace SessionMemory
         private bool BuildPublished(string tier, TierState state)
         {
             Store.Save(_indexer.StatePath(tier), state);
+            new IndexProgress(_root, tier, state.BuildId, _showProgress).Report("complete");
             _failedAt.Remove(tier);
             _errors.Remove(tier);
             Log($"{tier} build published in {state.DurationSeconds:0.#} s: {state.Documents.Count} documents");

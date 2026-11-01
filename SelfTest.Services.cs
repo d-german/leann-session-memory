@@ -93,7 +93,7 @@ namespace SessionMemory
         private static void CommandWiringChecks(string root)
         {
             using var services = Services(Path.Combine(root, "home"), root);
-            Check(services.GetServices<ICommand>().Select(command => command.Verb).SequenceEqual(["run", "search", "find", "show", "exclude", "include", "capture", "status", "self-test"]),
+            Check(services.GetServices<ICommand>().Select(command => command.Verb).SequenceEqual(["run", "search", "find", "show", "verify", "timeline", "related", "exclude", "include", "capture", "status", "self-test"]),
                 "registers one command per verb");
             var dispatcher = services.GetRequiredService<CommandDispatcher>();
             Check(Dispatch(dispatcher, ["include", "zzzzzzzz-none"]) == (1, "", "'zzzzzzzz-none' is not excluded." + Environment.NewLine)
@@ -101,8 +101,21 @@ namespace SessionMemory
                 "reports a failed command on standard error with its exit code");
             Check(Dispatch(dispatcher, ["find", "x", "--current", "--session", "abcdefgh"]) == (2, "", "Use either --current or --session, not both." + Environment.NewLine),
                 "rejects --current with --session");
+            var search = Dispatch(dispatcher, ["search", "Why Orion but not Vega?", "--top-k", "8", "--session", "abcdefgh", "--exclude-topic", "unrelated phrase", "--json"]);
+            Check(search.ExitCode == 1 && search.Error.Contains("No session-memory index", StringComparison.Ordinal),
+                "parses search scope, numeric limit and exclusion options before executing retrieval");
+            Check(Dispatch(dispatcher, ["search", "Orion", "--current", "--session", "abcdefgh"]).ExitCode == 2
+                  && Dispatch(dispatcher, ["search", "Orion", "--session"]).ExitCode == 2
+                  && Dispatch(dispatcher, ["search", "Orion", "--top-k"]).ExitCode == 2
+                  && Dispatch(dispatcher, ["search", "Orion", "--exclude-topic", " "]).ExitCode == 2,
+                "rejects conflicting and incomplete structured search options");
+            Directory.CreateDirectory(Path.Combine(root, "state"));
+            File.WriteAllText(Path.Combine(root, "state", "excluded.json"), "{malformed");
+            var strict = Attempt.Io(() => services.GetRequiredService<ExclusionService>().LoadChecked());
+            Check(strict.IsFailure, "fails closed when the search exclusion file is malformed");
+            File.Delete(Path.Combine(root, "state", "excluded.json"));
             var (exitCode, output, error) = Dispatch(dispatcher, ["status"]);
-            Check(exitCode == 0 && error == "" && JsonNode.Parse(output) is JsonObject { Count: 5 } report && report["manifest"] is null
+            Check(exitCode == 0 && error == "" && JsonNode.Parse(output) is JsonObject { Count: 7 } report && report["manifest"] is null
                   && report["excluded"] is JsonArray { Count: 0 }, "reports the status of an empty root");
         }
 

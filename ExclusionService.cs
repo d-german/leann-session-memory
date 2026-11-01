@@ -1,4 +1,5 @@
 ﻿using System.Collections.Immutable;
+using System.Text.Json;
 using CSharpFunctionalExtensions;
 using SessionMemory.Clients;
 
@@ -34,11 +35,24 @@ namespace SessionMemory
 
         public List<string> Load() => Store.Load<List<string>>(FilePath) ?? [];
 
+        public List<string> LoadChecked()
+        {
+            try
+            {
+                var entries = JsonSerializer.Deserialize<List<string>>(File.ReadAllText(FilePath));
+                if (entries is null || entries.Any(string.IsNullOrWhiteSpace)) throw new JsonException();
+                return entries;
+            }
+            catch (FileNotFoundException) { return []; }
+            catch (DirectoryNotFoundException) { return []; }
+            catch (JsonException error) { throw new IOException("Cannot read the session exclusion list.", error); }
+        }
+
         // The session running a search only echoes the question, so searches leave it out unless asked not to.
         // The ID is matched like any exclusion, so a short value must not drop unrelated sessions.
-        public ImmutableArray<string> ForSearch(bool includeCurrent, string? currentSession = null)
+        public ImmutableArray<string> ForSearch(bool includeCurrent, string? currentSession = null, IEnumerable<string>? stored = null)
         {
-            var exclusions = Load();
+            var exclusions = stored is null ? Load() : stored.ToList();
             currentSession ??= _currentSession.Detect();
             if (!includeCurrent && currentSession?.Trim() is { Length: >= MinimumIdLength } id) exclusions.Add(id);
             return [.. exclusions];

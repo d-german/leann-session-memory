@@ -62,7 +62,11 @@ namespace SessionMemory.Clients.Synthetic
                 stats["malformed"] += fileStats.Malformed;
                 stats["partial_trailing"] += fileStats.PartialTrailing;
             }
-            ImmutableArray<Document> documents = [.. grouped.Select(pair => new Document(FamilyName, "synthetic-proof", pair.Key, sources[pair.Key], [.. pair.Value]))];
+            ImmutableArray<Document> documents = [.. grouped.Select(pair => new Document(FamilyName, "synthetic-proof", pair.Key, sources[pair.Key], [.. pair.Value])
+            {
+                // The validation record needs a searchable marker after identity headers leave the embedding text.
+                Title = pair.Key == Indexer.CanaryId ? Indexer.CanaryId : ""
+            })];
             stats["sessions"] = documents.Length;
             return new FamilyResult(documents, stats);
         }

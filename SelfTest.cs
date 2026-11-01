@@ -29,6 +29,14 @@ namespace SessionMemory
 
             CorpusRefactorChecks();
             InfrastructureRefactorChecks();
+            ProgressChecks();
+            SqliteWriteChecks();
+            ConversationSearchChecks();
+            SemanticPassagesChecks();
+            IndexFormatChecks();
+            ExactMessageChecks();
+            NavigationChecks();
+            ClaimChecks();
             FinderRefactorChecks();
             ParserRefactorChecks();
             JsonRefactorChecks();
@@ -58,9 +66,13 @@ namespace SessionMemory
                                    "## Message 000013 part 1/1\nclient: c\nsession_id: s\ntitle: t\nmessage_id: m2\nrole: user\ntimestamp: 2026-10-20T19:40:00Z\nsource_ref: x\ntext:\n" +
                                    "Thanks\nrole: not a header here\n\n## Message 000014 part 1/1\nclient: c\nsess";
             var segments = Compact.Segments(passage);
-            Check(segments is [{ Text: "The fix is up." }, _] && Compact.Label(segments[0]) == "[assistant 2026-10-20 19:32]"
-                                                              && Compact.Label(segments[1]) == "[#13 user 2026-10-20 19:40]" && segments[1].Text == "Thanks\nrole: not a header here",
+            Check(segments is [{ Text: "The fix is up." }, _] && Compact.Label(segments[0]) == "[assistant 2026-10-20 19:32 UTC]"
+                                                              && Compact.Label(segments[1]) == "[#13 user 2026-10-20 19:40 UTC]" && segments[1].Text == "Thanks\nrole: not a header here",
                 "compacts passages that start and end inside headers");
+            Check(Compact.Time("2026-10-20T14:32:00-05:00") == Compact.Time("2026-10-20T19:32:00Z")
+                  && Compact.Time("2026-10-20T23:30:00-05:00") == "2026-10-21 04:30 UTC"
+                  && Compact.Time("unknown") == "unknown",
+                "renders equivalent instants and date boundaries in explicit UTC");
             var continued = Compact.Segments("rest of a sentence.\n\n## Message 000002 part 1/1\nrole: user\ntimestamp: 2026-10-20T19:40:00Z\ntext:\nNext");
             Check(continued.Length == 2 && Compact.Label(continued[0]) == "[...]" && continued[0].Text == "rest of a sentence.", "keeps text that continues a message");
             Check(Compact.Plain("It\u2019s caf\u00e9 \u2014 ok \U0001F600") == "It's caf\u00e9 - ok ", "writes plain text");
@@ -321,14 +333,14 @@ namespace SessionMemory
                 Around = "retry",
                 Max = 1
             });
-            Check(shown.GetValueOrDefault("") == "== fedcba98-7654 | codex | 1 messages | last 2026-10-20 19:40 | Exact\n1 matching messages\n" +
-                "[#1 user 2026-10-20 19:40] The retry limit is 5.\n", "shows the matching messages of a session");
+            Check(shown.GetValueOrDefault("") == "== fedcba98-7654 | codex | 1 messages | last 2026-10-20 19:40 UTC | Exact\n1 matching messages\n" +
+                "[#1 user 2026-10-20 19:40 UTC] The retry limit is 5.\n", "shows the matching messages of a session");
             var unreadable = reader.Show(new ShowRequest
             {
                 Id = "abcdef12-34"
             });
-            Check(unreadable.IsFailure && unreadable.Error.ExitCode == 2 && unreadable.Error.Message.StartsWith("FileNotFoundException: ", StringComparison.Ordinal),
-                "reports a transcript it cannot read");
+            Check(unreadable.IsFailure && unreadable.Error.ExitCode == 2 && unreadable.Error.Message == "The session is excluded.",
+                "refuses an excluded transcript before attempting to read its missing file");
             var invalid = reader.Show(new ShowRequest
             {
                 Id = "fedcba98-7654",
@@ -373,7 +385,7 @@ namespace SessionMemory
                 Id = "leann-memory",
                 Around = "retry limit is"
             });
-            Check(shown.IsSuccess && shown.Value.Contains("[#2 assistant 2026-10-21 00:00] The retry limit is 2.") && matched.IsSuccess
+            Check(shown.IsSuccess && shown.Value.Contains("[#2 assistant 2026-10-21 00:00 UTC] The retry limit is 2.") && matched.IsSuccess
                   && matched.Value.Contains("1 matching messages") && !matched.Value.Contains("#1 user"), "shows a session's last or matching messages");
             var exclusions = services.GetRequiredService<ExclusionService>();
             Store.Save(exclusions.FilePath, new List<string>

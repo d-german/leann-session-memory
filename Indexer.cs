@@ -55,12 +55,16 @@ namespace SessionMemory
 
         public int TopK { get; init; } = 8;
 
+        public bool Latest { get; init; }
+
         public bool Json { get; init; }
 
         public bool IncludeCurrent { get; init; }
 
         // Narrows the search to one session and its subagents.
         public string? OnlySession { get; init; }
+
+        public string? ExcludedTopic { get; init; }
     }
 
     /// <summary>What one LEANN .NET process exited with and wrote.</summary>
@@ -140,13 +144,28 @@ namespace SessionMemory
             _searchServer = searchServer;
         }
 
-        public static string IndexName(string tier) => tier == "archive" ? "session-memory" : "session-memory-recent";
+        public static string IndexName(string tier) => IndexName(tier, true);
+
+        public static string IndexName(string tier, bool current) => current
+            ? tier == "archive" ? "session-memory-conversations-v1" : "session-memory-conversations-v1-recent"
+            : tier == "archive" ? "session-memory" : "session-memory-recent";
+
+        public static string StateFileName(string tier, bool current) => current ? $"{tier}-conversations-v1-state.json" : $"{tier}-state.json";
+
+        public static bool ActiveCurrentFormat(string root) =>
+            Tiers.Any(tier => Directory.Exists(Path.Combine(root, ".leann", "indexes", IndexName(tier))));
+
+        public ImmutableArray<string> SearchTiers(bool current) =>
+            [.. Tiers.Where(tier => Directory.Exists(Path.Combine(_root, ".leann", "indexes", IndexName(tier, current))))];
 
         public bool Exists(string tier) => Directory.Exists(Path.Combine(_root, ".leann", "indexes", IndexName(tier)));
 
-        public string StatePath(string tier) => Path.Combine(_root, "state", $"{tier}-state.json");
+        public string StatePath(string tier) => Path.Combine(_root, "state", StateFileName(tier, true));
 
         public TierState LoadState(string tier) => Store.Load<TierState>(StatePath(tier)) ?? new TierState();
+
+        private TierState LoadSearchState(string tier, bool current) =>
+            Store.Load<TierState>(Path.Combine(_root, "state", StateFileName(tier, current))) ?? new TierState();
 
         // Sessions whose current text differs from the archive, plus the canary that validates every build.
         public static Dictionary<string, string> RecentDocuments(IReadOnlyDictionary<string, DocumentMeta> documents, IReadOnlyDictionary<string, string> archived) =>
@@ -166,18 +185,34 @@ namespace SessionMemory
             var docs = Path.Combine(buildRoot, "docs");
             Directory.CreateDirectory(docs);
             var copied = new Dictionary<string, string>();
+            var manifest = Store.Load<Manifest>(Path.Combine(_root, "state", "manifest.json"));
             foreach (var (name, sha) in documents)
             {
+                if (name != Path.GetFileName(name) || name.IndexOfAny(['/', '\\', ':']) >= 0)
+                    throw new InvalidDataException("Invalid corpus filename.");
                 var source = Path.Combine(_root, "corpus", name);
                 if (!File.Exists(source)) continue;
-                File.Copy(source, Path.Combine(docs, name));
+                if ((File.GetAttributes(source) & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException("Corpus source is a filesystem link.");
+                var content = File.ReadAllText(source).Replace("\r\n", "\n", StringComparison.Ordinal);
+                if (!string.Equals(Transcript.Sha256(content), sha, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Corpus source changed during staging.");
+                var snapshot = Path.Combine(buildRoot, "source-snapshot.md");
+                File.WriteAllText(snapshot, content, new UTF8Encoding(false));
+                try
+                {
+                    var title = manifest?.Documents.GetValueOrDefault(name)?.Title ?? "";
+                    if (SemanticPassages.Write(snapshot, docs, name, title) == 0 && content.Length > 0)
+                        throw new InvalidDataException("A nonempty corpus source produced no semantic passages.");
+                }
+                finally { File.Delete(snapshot); }
                 copied[name] = sha;
             }
             return new StagedBuild(tier, buildRoot, copied, corpusHash);
         }
 
         // Failures read "{ExceptionType}: {Message}", the text the watcher has always persisted for a failed build.
-        public Result<TierState, string> Build(StagedBuild staged)
+        public Result<TierState, string> Build(StagedBuild staged, IndexProgress progress)
         {
             if (!File.Exists(_leann.Executable) || !File.Exists(_leann.Model))
                 return Result.Failure<TierState, string>($"{nameof(FileNotFoundException)}: LEANN .NET or the facebook/contriever model is missing.");
@@ -185,7 +220,7 @@ namespace SessionMemory
             var index = IndexName(staged.Tier);
             var logs = Path.Combine(_root, "logs");
             Directory.CreateDirectory(logs);
-            return RebuildAndPublish(staged, index, logs).Map(() => new TierState
+            return RebuildAndPublish(staged, index, logs, progress).Map(() => new TierState
             {
                 IndexName = index,
                 BuildId = Path.GetFileName(staged.BuildRoot),
@@ -198,13 +233,18 @@ namespace SessionMemory
         }
 
         // The build folder is deleted before the state is recorded, however the build ends: published, failed, or by an exception.
-        private UnitResult<string> RebuildAndPublish(StagedBuild staged, string index, string logs)
+        private UnitResult<string> RebuildAndPublish(StagedBuild staged, string index, string logs, IndexProgress progress)
         {
             using var workspace = new TemporaryDirectory(Path.GetDirectoryName(staged.BuildRoot)!);
-            return Rebuild(staged.BuildRoot, index, logs)
+            return Rebuild(staged.BuildRoot, index, logs, progress)
+                .Tap(() => progress.Report("validating"))
                 .Bind(() => Validate(staged.BuildRoot, index, Path.Combine(logs, $"{index}-validate.log"), "Candidate"))
-                .Tap(() => Publish(_root, Path.Combine(staged.BuildRoot, ".leann", "indexes", index), index))
-                .Bind(() => Validate(_root, index, Path.Combine(logs, $"{index}-published.log"), "Published"));
+                .Tap(() => progress.Report("publishing"))
+                .Bind(() => Publish(_root, Path.Combine(staged.BuildRoot, ".leann", "indexes", index), index, () =>
+                {
+                    progress.Report("validating");
+                    return Validate(_root, index, Path.Combine(logs, $"{index}-published.log"), "Published");
+                }));
         }
 
         // One LEANN query ranks both indexes together. Each index's own scores are rank positions and cannot be
@@ -212,13 +252,18 @@ namespace SessionMemory
         // Returns the compact text or, for --json, the ASCII JSON.
         public Result<string, CliError> Search(SearchRequest request)
         {
-            ImmutableArray<string> tiers = [.. Tiers.Where(Exists)];
+            var currentFormat = ActiveCurrentFormat(_root);
+            var tiers = SearchTiers(currentFormat);
             if (tiers.IsEmpty) return new CliError("No session-memory index has been built yet.", 1);
             // Over-fetch, because stale archive copies and hits past the per-session cap are dropped below.
-            return Query(string.Join(',', tiers.Select(IndexName)), request.Query, Math.Min(request.TopK * 5, 60))
-                .Map(found => Render(request, tiers, found.Hits, found.Source))
-                .MapError(error => new CliError(error, 1));
+            return Query(string.Join(',', tiers.Select(tier => IndexName(tier, currentFormat))), request.Query, Math.Clamp(request.TopK * 10, 80, 200))
+                .Match(found => RenderChecked(request, tiers, currentFormat, found.Hits, found.Source),
+                    _ => RenderChecked(request, tiers, currentFormat, [], "lexical"));
         }
+
+        private Result<string, CliError> RenderChecked(SearchRequest request, ImmutableArray<string> tiers, bool currentFormat, JsonArray found, string source) =>
+            Attempt.Json(() => Attempt.Io(() => Render(request, tiers, currentFormat, found, source))).Bind(result => result)
+                .MapError(error => new CliError(error, 1));
 
         // LEANN's ranked hits. Output that is not JSON or holds no results array fails with the exit code and standard error.
         internal static Result<JsonArray, string> Hits(LeannOutput output) =>
@@ -226,17 +271,30 @@ namespace SessionMemory
                 .GetValueOrDefault()
                 .ToResult($"LEANN search failed with exit code {output.ExitCode}: {output.Error}");
 
-        private string Render(SearchRequest request, ImmutableArray<string> tiers, JsonArray found, string source)
+        private string Render(SearchRequest request, ImmutableArray<string> tiers, bool currentFormat, JsonArray found, string source)
         {
-            var recent = LoadState("recent").Documents.Keys.ToFrozenSet();
+            var recent = tiers.Contains("recent") ? LoadSearchState("recent", currentFormat).Documents.Keys.ToFrozenSet() : FrozenSet<string>.Empty;
             var documents = Store.Load<Manifest>(Path.Combine(_root, "state", "manifest.json"))?.Documents ?? [];
             // Exclusions apply before the next capture removes the session from the corpus.
-            var exclusions = _exclusions.ForSearch(request.IncludeCurrent);
+            var storedExclusions = _exclusions.LoadChecked();
+            var exclusions = _exclusions.ForSearch(request.IncludeCurrent, stored: storedExclusions);
             var current = Visible(documents, exclusions, request.OnlySession);
-            var ranked = found.OfType<JsonObject>().Select(hit => hit.DeepClone().AsObject());
+            var indexable = Visible(documents, [.. storedExclusions], null);
+            var ranked = found.OfType<JsonObject>().Select(hit => hit.DeepClone().AsObject())
+                .Where(hit => ResolvePassage(hit, documents));
             // An empty set keeps every hit when there is no manifest, but a session with no indexed document has none.
-            var hits = request.OnlySession is not null && current.Count == 0 ? [] : Filter(ranked, tiers, recent, current, request.TopK);
+            var candidates = Filter(ranked, tiers, recent, current, 200);
+            var hits = ConversationSearch.Retrieve(_root, request.Query, documents, current, candidates, request.TopK, request.Latest, indexable, request.ExcludedTopic);
             return request.Json ? RenderJson(request.Query, source, hits, documents) : RenderText(source, hits, documents);
+        }
+
+        private static bool ResolvePassage(JsonObject hit, IReadOnlyDictionary<string, DocumentMeta> documents)
+        {
+            var indexedFile = hit["file"].AsString() ?? "";
+            if (!SemanticPassages.TrySourceFile(indexedFile, documents, out var source)) return false;
+            hit["file"] = source;
+            if (indexedFile != source) hit["semantic_passage"] = indexedFile;
+            return true;
         }
 
         // The documents a search may show; onlySession narrows them to one session and its subagents.
@@ -257,7 +315,8 @@ namespace SessionMemory
                 .. ranked
                     .Select(hit =>
                     {
-                        hit["tier"] = Tiers.FirstOrDefault(tier => IndexName(tier) == hit["index"].AsString()) ?? tiers[0];
+                        hit["tier"] = Tiers.FirstOrDefault(tier => IndexName(tier) == hit["index"].AsString()
+                                                                      || IndexName(tier, false) == hit["index"].AsString()) ?? tiers[0];
                         return hit;
                     })
                     .Where(hit => Keep(hit["tier"].AsString()!, hit["file"].AsString() ?? "", recent, current))
@@ -287,10 +346,13 @@ namespace SessionMemory
             (current.Count == 0 || current.Contains(file)) && (tier != "archive" || !recent.Contains(file));
 
         // One header line per session, then its matching messages without the per-message transcript headers.
-        private static string RenderText(string source, ImmutableArray<JsonObject> hits, Dictionary<string, DocumentMeta> documents)
+        internal static string RenderText(string source, ImmutableArray<JsonObject> hits, Dictionary<string, DocumentMeta> documents)
         {
             var text = new StringBuilder();
-            if (source != "server") text.Append("(the search server is not running, so this search took the slow path)\n");
+            if (source == "lexical") text.Append("(semantic search is unavailable; showing local keyword matches)\n");
+            else if (source != "server") text.Append("(the search server is not running, so this search took the slow path)\n");
+            text.Append("Excerpts are not complete project status. Cite dated messages and check newer, open or pending follow-ups before claiming completion, publication or verification.\n");
+            text.Append("Read original messages with show <session-id> --message <n> --context 1 --chars 6000 before answering.\n");
             foreach (var session in hits.GroupBy(hit => hit["file"].AsString() ?? ""))
             {
                 var meta = documents.GetValueOrDefault(session.Key);
@@ -312,20 +374,30 @@ namespace SessionMemory
                 hit["client"] = meta.Client;
                 hit["session_id"] = meta.SessionId;
                 hit["last_activity"] = meta.LastActivity;
+                hit["read_context"] = new JsonObject
+                {
+                    ["session_id"] = meta.SessionId,
+                    ["message_numbers"] = hit["evidence_messages"]?.DeepClone()
+                        ?? new JsonArray(JsonValue.Create(hit["message_number"]?.GetValue<int>() ?? 0)),
+                    ["context"] = 1,
+                    ["chars"] = 6000
+                };
                 hit["transcript"] = Path.Combine(_root, "corpus", hit["file"]!.GetValue<string>());
             }
             var response = new JsonObject
             {
                 ["query"] = query,
                 ["count"] = hits.Length,
+                ["session_count"] = hits.Select(hit => hit["file"].AsString()).Distinct(StringComparer.Ordinal).Count(),
                 ["served_by"] = source,
+                ["evidence_notice"] = "Selected original excerpts, not a verified project status. Check open or pending follow-ups; do not infer completion or publication.",
                 ["results"] = new JsonArray([.. hits])
             };
             return Ascii(response.ToJsonString(Output));
         }
 
         // The log is written before the exit code is checked, so a failed build leaves LEANN's output behind.
-        private UnitResult<string> Rebuild(string buildRoot, string index, string logs)
+        private UnitResult<string> Rebuild(string buildRoot, string index, string logs, IndexProgress progress)
         {
             var docs = Path.Combine(buildRoot, "docs");
             string[] arguments =
@@ -338,18 +410,23 @@ namespace SessionMemory
                 ["LEANN_DATA_ROOT"] = buildRoot,
                 ["LEANN_MODEL"] = Model
             };
-            return RunLeann(arguments, environment, docs)
+            return RunLeann(arguments, environment, docs, progress.Observe)
                 .Tap(output => File.WriteAllText(Path.Combine(logs, $"{index}-build.log"), output.Output + output.Error))
                 .Ensure(output => output.ExitCode == 0, output => $"{nameof(InvalidOperationException)}: LEANN rebuild exited with {output.ExitCode}; see {logs}");
         }
 
         private UnitResult<string> Validate(string dataRoot, string index, string log, string label) =>
-            RunLeann(SearchArguments(dataRoot, index, CanaryId, 8))
+            RunLeann(SearchArguments(dataRoot, index, CanaryId, 50))
                 .Tap(output => File.WriteAllText(log, output.Output + output.Error))
-                .Ensure(output => output.ExitCode == 0 && output.Output.Contains(CanaryId, StringComparison.OrdinalIgnoreCase),
+                .Ensure(output => CanaryFound(output, Store.Load<Manifest>(Path.Combine(_root, "state", "manifest.json"))?.Documents ?? []),
                     _ => $"{nameof(InvalidOperationException)}: {label} index failed canary validation; see {log}");
 
-        private static void Publish(string root, string candidate, string index)
+        internal static bool CanaryFound(LeannOutput output, IReadOnlyDictionary<string, DocumentMeta> documents) =>
+            output.ExitCode == 0 && Hits(output).GetValueOrDefault([]).OfType<JsonObject>().Any(hit =>
+                SemanticPassages.TrySourceFile(hit["file"].AsString() ?? "", documents, out var source)
+                && documents[source].SessionId == CanaryId);
+
+        internal static UnitResult<string> Publish(string root, string candidate, string index, Func<UnitResult<string>> validate)
         {
             var indexes = Path.Combine(root, ".leann", "indexes");
             Directory.CreateDirectory(indexes);
@@ -360,16 +437,25 @@ namespace SessionMemory
             {
                 if (Directory.Exists(destination)) Directory.Move(destination, previous);
             });
+            var published = false;
+            var accepted = false;
             try
             {
                 Store.Retry(() => Directory.Move(candidate, destination));
+                published = true;
+                var result = validate();
+                accepted = result.IsSuccess;
+                return result;
             }
-            catch
+            finally
             {
-                if (Directory.Exists(previous) && !Directory.Exists(destination)) Directory.Move(previous, destination);
-                throw;
+                if (accepted) DeleteDirectory(previous);
+                else
+                {
+                    if (published) Directory.Delete(destination, recursive: true);
+                    if (Directory.Exists(previous)) Directory.Move(previous, destination);
+                }
             }
-            DeleteDirectory(previous);
         }
 
         // Near-duplicate filtering stays off: an unchanged passage exists in both indexes, and if LEANN kept the
@@ -388,7 +474,7 @@ namespace SessionMemory
                 : RunLeann(SearchArguments(_root, index, query, topK)).Bind(Hits).Map(hits => (Hits: hits, Source: "cli"));
 
         private Result<LeannOutput, string> RunLeann(IEnumerable<string> arguments, IReadOnlyDictionary<string, string>? environment = null,
-            string? workingDirectory = null)
+            string? workingDirectory = null, Action<string>? onOutput = null)
         {
             var start = new ProcessStartInfo(_leann.Executable)
             {
@@ -402,7 +488,7 @@ namespace SessionMemory
             };
             foreach (var argument in arguments) start.ArgumentList.Add(argument);
             foreach (var (name, value) in environment ?? new Dictionary<string, string>()) start.Environment[name] = value;
-            return Start(start).Map(Collect);
+            return Start(start).Map(process => Collect(process, onOutput));
         }
 
         // A missing or unrunnable executable throws Win32Exception; the failure keeps the "{ExceptionType}: {Message}" text.
@@ -418,14 +504,27 @@ namespace SessionMemory
             }
         }
 
-        private static LeannOutput Collect(Process process)
+        internal static LeannOutput Collect(Process process, Action<string>? onOutput = null)
         {
             using (process)
             {
-                var error = process.StandardError.ReadToEndAsync();
-                var output = process.StandardOutput.ReadToEnd();
+                var error = Read(process.StandardError);
+                var output = Read(process.StandardOutput);
+                Task.WhenAll(output, error).GetAwaiter().GetResult();
                 process.WaitForExit();
-                return new LeannOutput(process.ExitCode, output, error.GetAwaiter().GetResult());
+                return new LeannOutput(process.ExitCode, output.Result, error.Result);
+            }
+
+            async Task<string> Read(StreamReader reader)
+            {
+                if (onOutput is null) return await reader.ReadToEndAsync().ConfigureAwait(false);
+                var text = new StringBuilder();
+                while (await reader.ReadLineAsync().ConfigureAwait(false) is { } line)
+                {
+                    text.AppendLine(line);
+                    onOutput(line);
+                }
+                return text.ToString();
             }
         }
 

@@ -96,13 +96,16 @@ namespace SessionMemory
             Check(indexer.LoadState("archive") is { Signature: "s", DurationSeconds: 2.5 } reloaded && reloaded.Documents.Keys.SequenceEqual(["z.md", "a.md"]),
                 "keeps tier-state documents in order");
             Directory.CreateDirectory(Path.Combine(root, "corpus"));
-            File.WriteAllText(Path.Combine(root, "corpus", "a.md"), "a");
+            const string transcript = "## Message 000001 part 1/1\nrole: assistant\ntimestamp: 2026-01-01T00:00:00Z\ntext:\nA staged source remains independent.\n";
+            File.WriteAllText(Path.Combine(root, "corpus", "a.md"), transcript);
             var staged = indexer.Stage("recent", new Dictionary<string, string>
             {
-                ["a.md"] = "1",
+                ["a.md"] = Transcript.Sha256(transcript),
                 ["gone.md"] = "2"
             }, "hash");
-            Check(staged is { Tier: "recent", CorpusHash: "hash" } && staged.Documents.Keys.SequenceEqual(["a.md"]) && File.Exists(Path.Combine(staged.BuildRoot, "docs", "a.md")),
+            var stagedFiles = Directory.GetFiles(Path.Combine(staged.BuildRoot, "docs"));
+            Check(staged is { Tier: "recent", CorpusHash: "hash" } && staged.Documents.Keys.SequenceEqual(["a.md"])
+                  && stagedFiles.Length == 1 && File.ReadAllText(stagedFiles[0]).Contains("A staged source remains independent."),
                 "stages only documents still in the corpus");
         }
 
