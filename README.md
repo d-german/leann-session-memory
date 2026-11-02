@@ -9,6 +9,18 @@ your conversations. The assistant can read selected excerpts, then the relevant 
 the context. SessionMemory combines a local SQLite search cache with [LEANN .NET](https://github.com/d-german/leann-dotnet)
 semantic retrieval, keeps the cache current in the background, and tells those assistants how to search it.
 
+The frozen October 30, 2026 benchmark snapshot covered about eight months of coding history:
+
+| History searched | Size or coverage |
+| --- | --- |
+| Time span | February to October 2026 |
+| Indexed source records | 1,240, including subagent sessions and a validation record |
+| Raw transcript export | About 4.03 GB |
+| Normalized conversation corpus | About 59.7 MB |
+
+Both methods searched the same source history. Raw logs included richer original tool outputs. These sizes describe
+the transcript data, excluding the embedding model, search indexes and application files.
+
 In the latest blind comparison using Claude Opus 5.5, memory matched raw-log search on accuracy while using less time
 and fewer tokens. Ten previously discussed questions were run once per method:
 
@@ -24,6 +36,12 @@ Memory used **69.0% less time, 74.1% fewer total tokens and 51.4% fewer uncached
 pairs. Accuracy includes all ten questions per method: raw search timed out once at 15 minutes; memory completed all
 ten. The timeout has no token accounting and is excluded from both methods' paired means. Fully supported means the
 main answer is correct, its evidence and citations hold up, and it contains no unsupported extra claims.
+
+**Total tokens** count all input and output, including input reused from the answering model's prompt cache.
+**Uncached tokens** subtract cache-read input: `input - cache-read + output`; cache writes remain included in input.
+For example, 100,000 input tokens, 80,000 cache-read tokens and 2,000 output tokens mean 102,000 total tokens and
+22,000 uncached tokens. This model-level prompt cache is separate from SessionMemory's local search cache.
+The 51.4% uncached reduction shows that savings remained after subtracting reused input; neither measure is a bill.
 
 These are measured workflow results from a small, previously seen sample, not general accuracy or billing guarantees.
 The measured frozen build predates the subsequent code review and cleanup; that revised build has not repeated the model benchmark.
